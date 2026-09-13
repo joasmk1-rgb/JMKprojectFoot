@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Admin — Tournoi</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>⚙️ Administration tournoi</h1>
+  <div id="auth-status"></div>
+</header>
+
+<main id="app" hidden>
+  <div class="card" id="tournament-picker">
+    <h2>Tournois</h2>
+    <div class="toolbar">
+      <select id="select-tournament"></select>
+      <button id="btn-new-tournament" class="secondaire">+ Nouveau tournoi</button>
+    </div>
+  </div>
+
+  <div id="new-tournament-form" class="card" hidden>
+    <h2>Créer un tournoi</h2>
+
+    <label class="champ-label">Nom du tournoi</label>
+    <input id="nt-nom" placeholder="ex : Tournoi Partenariat Sud 2026" style="width:100%;margin-bottom:14px;" />
+
+    <label class="champ-label">Taille de groupe visée</label>
+    <p class="aide">Le nombre de groupes n'est PAS fixé ici : il se recalcule automatiquement à chaque ajout/retrait d'équipe, pour rester le plus proche possible de cette taille. Tu peux ne pas connaître le nombre final d'équipes à l'avance.</p>
+    <input id="nt-taillegroupe" type="number" min="2" placeholder="ex : 4 équipes par groupe" value="4" style="width:100%;margin-bottom:14px;" />
+
+    <label class="champ-label">Format d'un match</label>
+    <p class="aide">Nombre de mi-temps et durée de chacune — la durée totale d'un match sert à construire le calendrier.</p>
+    <div class="grille-form">
+      <input id="nt-nbmitemps" type="number" min="1" placeholder="Nb de mi-temps" value="2" />
+      <input id="nt-dureemitemps" type="number" min="1" placeholder="Durée d'une mi-temps (min)" value="10" />
+      <input id="nt-pause" type="number" min="0" placeholder="Pause entre 2 matchs (min)" value="5" />
+    </div>
+
+    <label class="champ-label">Phase de groupe</label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+      <input id="nt-allerretour" type="checkbox" style="width:auto;" />
+      Aller-retour (chaque équipe affronte chaque autre équipe du groupe 2 fois)
+    </label>
+
+    <label class="champ-label">Phase finale (optionnel)</label>
+    <p class="aide">Nombre total d'équipes qualifiées pour la phase à élimination directe (ex : 4, 8). Le système prend automatiquement tous les premiers de groupe, puis complète avec les meilleurs 2èmes/3èmes classés entre eux. Laisse vide si tu ne fais pas de phase finale.</p>
+    <input id="nt-nbqualifies" type="number" min="2" placeholder="ex : 4 équipes qualifiées" style="width:100%;margin-bottom:14px;" />
+
+    <button id="btn-create-tournament">Créer le tournoi</button>
+  </div>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="equipes" class="active">Équipes</button>
+    <button data-tab="terrains">Terrains</button>
+    <button data-tab="calendrier">Calendrier</button>
+    <button data-tab="resultats">Résultats</button>
+    <button data-tab="classement">Classement</button>
+    <button data-tab="phase-finale">Phase finale</button>
+    <button data-tab="dispos">Disponibilités</button>
+    <button data-tab="admins">Administrateurs</button>
+  </nav>
+
+  <section id="tab-equipes" class="tab-content">
+    <div class="card">
+      <h2>Ajouter une équipe</h2>
+      <div class="grille-form">
+        <input id="eq-nom" placeholder="Nom de l'équipe" />
+        <input id="eq-password" placeholder="Mot de passe capitaine" />
+      </div>
+      <button id="btn-add-team">Ajouter l'équipe</button>
+    </div>
+    <div class="card">
+      <h2>Équipes inscrites</h2>
+      <p class="muted" id="groupes-preview"></p>
+      <div class="toolbar">
+        <button id="btn-delete-teams-selection" class="danger">Supprimer la sélection</button>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="check-all-teams" /></th><th>Nom</th><th>Groupe (généré au calendrier)</th><th>Statut</th><th>Paiement</th><th>Membres</th><th></th></tr></thead>
+        <tbody id="teams-table"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-terrains" class="tab-content" hidden>
+    <div class="card">
+      <h2>Ajouter un terrain</h2>
+      <div class="grille-form">
+        <input id="ter-nom" placeholder="Nom du terrain (ex : Terrain 1)" />
+        <button id="btn-add-venue">Ajouter</button>
+      </div>
+    </div>
+    <div id="venues-container"></div>
+  </section>
+
+  <section id="tab-calendrier" class="tab-content" hidden>
+    <div class="card">
+      <h2>Génération automatique du calendrier</h2>
+      <p class="muted">Calcule le nombre de groupes selon le nombre d'équipes actuel, génère toutes les confrontations de poule et les place dans les créneaux de disponibilité des terrains déclarés dans l'onglet Terrains.</p>
+      <button id="btn-generate-schedule">Générer le calendrier</button>
+      <button id="btn-clear-schedule" class="danger">Effacer le calendrier</button>
+    </div>
+    <div class="card">
+      <h2>Matchs</h2>
+      <div class="toolbar">
+        <button id="btn-delete-matches-selection" class="danger">Supprimer la sélection</button>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="check-all-matches" /></th><th>Groupe</th><th>Match</th><th>Date</th><th>Heure</th><th>Terrain</th><th>Statut</th><th></th></tr></thead>
+        <tbody id="matches-table"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-resultats" class="tab-content" hidden>
+    <div class="card">
+      <h2>Encoder un résultat</h2>
+      <p class="muted">Sélectionne un match pour encoder le score. Le classement se recalcule automatiquement.</p>
+      <div id="matches-to-encode"></div>
+    </div>
+  </section>
+
+  <section id="tab-classement" class="tab-content" hidden>
+    <div id="classements-container"></div>
+  </section>
+
+  <section id="tab-phase-finale" class="tab-content" hidden>
+    <div class="card">
+      <h2>Générer la phase finale</h2>
+      <p class="muted">Prend automatiquement tous les premiers de groupe, puis complète avec les meilleurs 2èmes/3èmes (selon le nombre de qualifiés défini à la création du tournoi) pour générer le tableau à élimination directe.</p>
+      <button id="btn-generate-finale">Générer la phase finale</button>
+    </div>
+    <div class="card">
+      <h2>Matchs de phase finale</h2>
+      <table>
+        <thead><tr><th>Phase</th><th>Match</th><th>Score</th></tr></thead>
+        <tbody id="finale-table"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-dispos" class="tab-content" hidden>
+    <div class="card">
+      <h2>Disponibilités des équipes</h2>
+      <p class="muted">Vue combinée : plus une case est verte foncé, plus d'équipes sont dispo à ce créneau ; un liseré rouge signale qu'au moins une équipe s'est mise "pas dispo". Prochaine étape : une couche arbitres se superposera ici avec sa propre couleur.</p>
+      <div class="toolbar">
+        <label>Vue :</label>
+        <select id="dispo-view-select">
+          <option value="combinee">Combinée (toutes les équipes)</option>
+        </select>
+      </div>
+      <div class="grid-scroll">
+        <div id="admin-dispo-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-admins" class="tab-content" hidden>
+    <div class="card">
+      <h2>Ajouter un administrateur</h2>
+      <p class="muted">Chaque admin a son propre mot de passe personnel. Dès qu'au moins un admin existe, le mot de passe de démarrage (dans config.js) cesse définitivement de fonctionner.</p>
+      <div class="grille-form">
+        <input id="ad-nom" placeholder="Nom" />
+        <input id="ad-password" placeholder="Mot de passe personnel" />
+      </div>
+      <button id="btn-add-admin">Ajouter</button>
+    </div>
+    <div class="card">
+      <h2>Administrateurs actuels</h2>
+      <div class="toolbar">
+        <button id="btn-delete-admins-selection" class="danger">Supprimer la sélection</button>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="check-all-admins" /></th><th>Nom</th><th></th></tr></thead>
+        <tbody id="admins-table"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="login-screen" class="card" style="max-width:400px;margin:60px auto;">
+  <h2>Connexion admin</h2>
+  <input id="admin-password" type="password" placeholder="Mot de passe admin" style="width:100%;margin-bottom:10px;" />
+  <button id="btn-login" style="width:100%;">Se connecter</button>
+  <p id="login-error" class="muted" style="color:var(--rouge);"></p>
+</div>
+
+<script type="module" src="admin.js"></script>
+</body>
+</html>
