@@ -1,0 +1,30 @@
+rules_version = '2';
+
+// Sécurité minimale pour la beta : lecture ouverte à tous (site public),
+// écriture ouverte aussi pour l'instant (pas de vrai système de comptes
+// côté serveur — l'admin/capitaine sont "protégés" par mot de passe côté
+// interface, pas par les règles Firestore elles-mêmes).
+//
+// ⚠️ C'est le même niveau de sécurité que agenda-conseil : suffisant pour
+// un usage interne (équipes que tu connais), pas pour un vrai hub public
+// avec des inconnus — à revoir avant d'ouvrir le mode "hub"/matchmaking.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /tournaments/{tournamentId} {
+      allow read: if true;
+      allow write: if true;
+
+      match /teams/{teamId} {
+        allow read: if true;
+        allow write: if true;
+      }
+
+      match /matches/{matchId} {
+        allow read: if true;
+        allow write: if true;
+      }
+    }
+  }
+}

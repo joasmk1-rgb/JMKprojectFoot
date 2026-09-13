@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tournoi</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>🏆 Tournoi</h1>
+  <div id="captain-widget">
+    <span id="captain-status" class="muted"></span>
+    <input id="captain-password" type="password" placeholder="Mot de passe capitaine" style="width:180px;" />
+    <button id="btn-captain-login" class="secondaire">Se connecter</button>
+    <button id="btn-captain-logout" class="secondaire" hidden>Déconnexion</button>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Tournoi</h2>
+    <select id="select-tournament"></select>
+  </div>
+
+  <nav class="tabs">
+    <button data-tab="calendrier" class="active">Calendrier</button>
+    <button data-tab="classement">Classement</button>
+    <button data-tab="mon-equipe" id="tab-btn-mon-equipe" hidden>Mon équipe</button>
+  </nav>
+
+  <section id="tab-calendrier" class="tab-content">
+    <div class="card">
+      <table>
+        <thead><tr><th>Groupe</th><th>Match</th><th>Date</th><th>Heure</th><th>Terrain</th><th>Score</th><th>Statut</th></tr></thead>
+        <tbody id="public-matches"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="tab-classement" class="tab-content" hidden>
+    <div id="public-classements"></div>
+  </section>
+
+  <section id="tab-mon-equipe" class="tab-content" hidden>
+    <div class="card">
+      <h2>Mes prochains matchs</h2>
+      <table>
+        <thead><tr><th>Adversaire</th><th>Date</th><th>Heure</th><th>Terrain</th></tr></thead>
+        <tbody id="my-matches"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Composition de l'équipe</h2>
+      <div class="grille-form">
+        <input id="mb-nom" placeholder="Nom du joueur" />
+        <input id="mb-poste" placeholder="Poste (optionnel)" />
+        <input id="mb-numero" placeholder="Numéro (optionnel)" />
+        <input id="mb-piedfort" placeholder="Pied fort (optionnel)" />
+      </div>
+      <button id="btn-add-member">Ajouter un joueur</button>
+      <table style="margin-top:10px;">
+        <thead><tr><th>Nom</th><th>Poste</th><th>N°</th><th>Pied fort</th><th></th></tr></thead>
+        <tbody id="members-table"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Préférence de terrain</h2>
+      <input id="my-terrain-pref" placeholder="Terrain préféré" />
+      <button id="btn-save-pref" class="secondaire">Enregistrer</button>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="script.js"></script>
+</body>
+</html>
