@@ -3,7 +3,7 @@ import {
   createTournament, watchTournaments, getTournament, updateTournament,
   createTeam, watchTeams, updateTeam, deleteTeam, addTeamMember, removeTeamMember,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch,
-  getAdmins, watchAdmins, createAdmin, deleteAdmin, findAdminByPassword,
+  getAdmins, watchAdmins, createAdmin, deleteAdmin,
   createVenue, watchVenues, deleteVenue, setVenueAvailability,
 } from "./db.js";
 import {
@@ -32,8 +32,14 @@ async function tenterLogin() {
   btnLogin.textContent = "Connexion...";
 
   try {
-    // 1. essaie d'abord de matcher un admin déjà créé
-    const admin = await findAdminByPassword(pass);
+    // Un seul aller-retour réseau (avant : findAdminByPassword ET getAdmins
+    // étaient appelés l'un après l'autre, donc 2 lectures Firestore en série
+    // au lieu d'une seule) : on récupère la liste une fois, puis on
+    // 1. cherche un admin existant qui correspond, sinon
+    // 2. accepte la passphrase de démarrage UNIQUEMENT s'il n'existe encore
+    // aucun admin (bootstrap) — dès qu'un admin existe, elle est morte.
+    const admins = await getAdmins();
+    const admin = admins.find((a) => a.password === pass);
     if (admin) {
       currentAdmin = admin;
       loginScreen.hidden = true;
@@ -42,9 +48,6 @@ async function tenterLogin() {
       return;
     }
 
-    // 2. sinon, la passphrase de démarrage ne marche QUE s'il n'existe
-    // encore aucun admin (bootstrap). Dès qu'un admin existe, elle est morte.
-    const admins = await getAdmins();
     if (admins.length === 0 && pass === ADMIN_PASSPHRASE) {
       currentAdmin = null; // pas encore un vrai admin, juste le bootstrap
       loginScreen.hidden = true;
