@@ -7,10 +7,10 @@
 // (voir firestore.rules) — voir le README pour la marche à suivre complète.
 
 export const firebaseConfig = {
-  apiKey: "REMPLACE_MOI",
-  authDomain: "REMPLACE_MOI",
-  projectId: "REMPLACE_MOI",
-  storageBucket: "REMPLACE_MOI",
-  messagingSenderId: "REMPLACE_MOI",
-  appId: "REMPLACE_MOI",
+  apiKey: "AIzaSyDvRA1TVAanB8MRaHGT-AA9qGGVUhERLWk",
+  authDomain: "jmkprojectfoot.firebaseapp.com",
+  projectId: "jmkprojectfoot",
+  storageBucket: "jmkprojectfoot.firebasestorage.app",
+  messagingSenderId: "348134428134",
+  appId: "1:348134428134:web:e4b4b565c536f1cc311a27",
 };
