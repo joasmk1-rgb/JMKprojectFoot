@@ -118,18 +118,31 @@ function init() {
   });
 
   document.getElementById("btn-create-tournament").addEventListener("click", async () => {
-    const nbQualifiesRaw = document.getElementById("nt-nbqualifies").value;
-    const id = await createTournament({
-      nom: document.getElementById("nt-nom").value,
-      tailleGroupeVisee: Number(document.getElementById("nt-taillegroupe").value),
-      nbMiTemps: Number(document.getElementById("nt-nbmitemps").value),
-      dureeMiTemps: Number(document.getElementById("nt-dureemitemps").value),
-      duréePause: Number(document.getElementById("nt-pause").value),
-      allerRetour: document.getElementById("nt-allerretour").checked,
-      nbQualifiesPhaseFinale: nbQualifiesRaw ? Number(nbQualifiesRaw) : null,
-    });
-    document.getElementById("new-tournament-form").hidden = true;
-    selectTournament(id);
+    const btn = document.getElementById("btn-create-tournament");
+    const nom = document.getElementById("nt-nom").value.trim();
+    if (!nom) return alert("Le nom du tournoi est obligatoire.");
+    btn.disabled = true;
+    btn.textContent = "Création...";
+    try {
+      const nbQualifiesRaw = document.getElementById("nt-nbqualifies").value;
+      const id = await createTournament({
+        nom,
+        tailleGroupeVisee: Number(document.getElementById("nt-taillegroupe").value),
+        nbMiTemps: Number(document.getElementById("nt-nbmitemps").value),
+        dureeMiTemps: Number(document.getElementById("nt-dureemitemps").value),
+        duréePause: Number(document.getElementById("nt-pause").value),
+        allerRetour: document.getElementById("nt-allerretour").checked,
+        nbQualifiesPhaseFinale: nbQualifiesRaw ? Number(nbQualifiesRaw) : null,
+      });
+      document.getElementById("new-tournament-form").hidden = true;
+      selectTournament(id);
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de la création du tournoi : " + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Créer le tournoi";
+    }
   });
 
   document.querySelectorAll("nav.tabs button").forEach((btn) => {
@@ -195,26 +208,49 @@ function init() {
     const nom = document.getElementById("ad-nom").value.trim();
     const password = document.getElementById("ad-password").value.trim();
     if (!nom || !password) return alert("Nom et mot de passe obligatoires.");
-    await createAdmin(nom, password);
-    document.getElementById("ad-nom").value = "";
-    document.getElementById("ad-password").value = "";
-    alert("Administrateur ajouté. S'il s'agit du premier, le mot de passe de démarrage ne fonctionne plus.");
+    try {
+      await createAdmin(nom, password);
+      document.getElementById("ad-nom").value = "";
+      document.getElementById("ad-password").value = "";
+      alert("Administrateur ajouté. S'il s'agit du premier, le mot de passe de démarrage ne fonctionne plus.");
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de l'ajout de l'administrateur : " + (e.message || e));
+    }
   });
 
   document.getElementById("btn-add-team").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-add-team");
     const nom = document.getElementById("eq-nom").value.trim();
     const password = document.getElementById("eq-password").value.trim();
     if (!nom || !password) return alert("Nom et mot de passe capitaine obligatoires.");
-    await createTeam(currentTournamentId, { nom, capitainePassword: password });
-    document.getElementById("eq-nom").value = "";
-    document.getElementById("eq-password").value = "";
+    if (!currentTournamentId) return alert("Aucun tournoi sélectionné — choisis ou crée d'abord un tournoi en haut de page.");
+    btn.disabled = true;
+    btn.textContent = "Ajout...";
+    try {
+      await createTeam(currentTournamentId, { nom, capitainePassword: password });
+      document.getElementById("eq-nom").value = "";
+      document.getElementById("eq-password").value = "";
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de l'ajout de l'équipe : " + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Ajouter l'équipe";
+    }
   });
 
   document.getElementById("btn-add-venue").addEventListener("click", async () => {
     const nom = document.getElementById("ter-nom").value.trim();
     if (!nom) return alert("Nom du terrain obligatoire.");
-    await createVenue(currentTournamentId, nom);
-    document.getElementById("ter-nom").value = "";
+    if (!currentTournamentId) return alert("Aucun tournoi sélectionné — choisis ou crée d'abord un tournoi en haut de page.");
+    try {
+      await createVenue(currentTournamentId, nom);
+      document.getElementById("ter-nom").value = "";
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de l'ajout du terrain : " + (e.message || e));
+    }
   });
 
   // ---- Grille de disponibilité des terrains + marquage rapide ----
