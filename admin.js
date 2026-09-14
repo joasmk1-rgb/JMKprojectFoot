@@ -141,13 +141,30 @@ function init() {
       if (btn.dataset.tab === "resultats") renderResultsForm();
       if (btn.dataset.tab === "classement") renderStandings();
       if (btn.dataset.tab === "dispos") {
-        renderAdminDispoGrid();
-        updateSondageStatus();
+        const scope = document.getElementById("dispo-scope-select").value;
+        if (scope === "equipes") {
+          renderAdminDispoGrid();
+          updateSondageStatus();
+        } else {
+          renderTerrainDispoGrid();
+        }
       }
     });
   });
 
   document.getElementById("dispo-view-select").addEventListener("change", renderAdminDispoGrid);
+
+  document.getElementById("dispo-scope-select").addEventListener("change", (e) => {
+    const scope = e.target.value;
+    document.getElementById("dispo-scope-equipes").hidden = scope !== "equipes";
+    document.getElementById("dispo-scope-terrains").hidden = scope !== "terrains";
+    if (scope === "equipes") {
+      renderAdminDispoGrid();
+      updateSondageStatus();
+    } else {
+      renderTerrainDispoGrid();
+    }
+  });
 
   document.getElementById("btn-toggle-mode-sondage").addEventListener("click", (e) => {
     modeSondage = !modeSondage;
