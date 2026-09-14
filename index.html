@@ -10,6 +10,7 @@
 <header>
   <h1>🏆 Tournoi</h1>
   <div id="captain-widget">
+    <a href="joueur.html" style="color:var(--rouge);font-size:0.85rem;margin-right:10px;">⚽ Mon compte joueur</a>
     <span id="captain-status" class="muted"></span>
     <input id="captain-password" type="password" placeholder="Mot de passe capitaine" style="width:180px;" />
     <button id="btn-captain-login" class="secondaire">Se connecter</button>
@@ -52,17 +53,35 @@
     </div>
     <div class="card">
       <h2>Composition de l'équipe</h2>
+      <p class="muted">Code d'équipe à partager à tes joueurs pour qu'ils rejoignent l'effectif depuis leur propre compte (page "Mon compte joueur") : <strong id="mon-code-equipe" style="color:var(--rouge);"></strong></p>
       <div class="grille-form">
-        <input id="mb-nom" placeholder="Nom du joueur" />
+        <input id="mb-nom" placeholder="Nom du joueur (sans compte)" />
         <input id="mb-poste" placeholder="Poste (optionnel)" />
         <input id="mb-numero" placeholder="Numéro (optionnel)" />
         <input id="mb-piedfort" placeholder="Pied fort (optionnel)" />
       </div>
-      <button id="btn-add-member">Ajouter un joueur</button>
+      <button id="btn-add-member">Ajouter un joueur libre (sans compte)</button>
       <table style="margin-top:10px;">
-        <thead><tr><th>Nom</th><th>Poste</th><th>N°</th><th>Pied fort</th><th></th></tr></thead>
+        <thead><tr><th>Nom</th><th>Poste</th><th>N°</th><th>Pied fort</th><th>Type</th><th></th></tr></thead>
         <tbody id="members-table"></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>Dispo des coéquipiers (comptes liés)</h2>
+      <p class="muted">Plus une case est verte foncé, plus de coéquipiers ont dit être dispo à ce créneau ; un liseré rouge signale qu'au moins un coéquipier a dit "pas dispo". Seuls les joueurs qui ont rejoint l'équipe via leur compte apparaissent ici.</p>
+      <div class="toolbar">
+        <button id="btn-toggle-mode-sondage-equipe" class="secondaire">🔶 Sonder mes coéquipiers sur des créneaux</button>
+        <span id="sondage-equipe-selection-count" class="muted"></span>
+      </div>
+      <div class="toolbar">
+        <button id="btn-sonder-equipe-appliquer">Sonder les créneaux sélectionnés</button>
+        <button id="btn-sonder-equipe-vider" class="danger">Vider le sondage de l'équipe</button>
+      </div>
+      <p class="muted" id="sondage-equipe-status"></p>
+      <div class="grid-scroll">
+        <div id="coequipiers-dispo-grid" class="dispo-grid"></div>
+      </div>
     </div>
     <div class="card">
       <h2>Préférence de terrain</h2>
@@ -73,6 +92,8 @@
     <div class="card">
       <h2>Disponibilités de l'équipe</h2>
       <p class="muted">Clique ou clique-glisse sur la grille pour marquer les créneaux où l'équipe peut/ne peut pas jouer. Choisis d'abord le mode ci-dessous.</p>
+
+      <p id="sondage-banner-equipe" class="sondage-banner" hidden></p>
 
       <div class="dispo-toolbar">
         <button id="mode-available" class="mode-active">✅ Marquer dispo</button>
@@ -99,6 +120,10 @@
           <input type="date" id="mr-date-debut" />
           <input type="date" id="mr-date-fin" />
         </div>
+
+        <label style="display:flex;align-items:center;gap:6px;margin:8px 0;">
+          <input type="checkbox" id="mr-seulement-vide" style="width:auto;" /> Seulement les cases pas encore marquées (ne pas écraser ce qui est déjà rempli)
+        </label>
 
         <div class="toolbar">
           <button id="mr-mode-available" class="mode-active">✅ Dispo</button>

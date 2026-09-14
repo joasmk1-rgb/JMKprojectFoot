@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mon compte joueur — Hub Foot</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>⚽ Mon compte joueur</h1>
+  <div id="joueur-status"></div>
+</header>
+
+<main>
+  <div id="joueur-login-card" class="card" style="max-width:420px;margin:0 auto 20px;">
+    <h2>Connexion</h2>
+    <p class="aide">Connecte-toi avec ton mot de passe personnel, ou crée ton compte ci-dessous si c'est ta première visite. Ce compte est le tien : plus tard tu pourras l'utiliser pour rejoindre plusieurs équipes, tournois ou championnats.</p>
+    <input id="j-login-password" type="password" placeholder="Mot de passe personnel" style="width:100%;margin-bottom:10px;" />
+    <button id="j-btn-login" style="width:100%;">Se connecter</button>
+    <p id="j-login-error" class="muted" style="color:var(--rouge);"></p>
+
+    <h2 style="margin-top:22px;">Créer un compte</h2>
+    <div class="grille-form">
+      <input id="j-signup-nom" placeholder="Ton nom" />
+      <input id="j-signup-password" type="password" placeholder="Choisis un mot de passe personnel" />
+    </div>
+    <button id="j-btn-signup" class="secondaire" style="width:100%;">Créer mon compte</button>
+    <p id="j-signup-error" class="muted" style="color:var(--rouge);"></p>
+  </div>
+
+  <div id="joueur-app" hidden>
+    <div class="card">
+      <h2 id="j-nom-affiche"></h2>
+      <button id="j-btn-logout" class="secondaire">Déconnexion</button>
+    </div>
+
+    <div class="card">
+      <h2>Mes disponibilités</h2>
+      <p class="muted">Clique ou clique-glisse sur la grille pour marquer tes créneaux dispo/pas dispo — c'est ta dispo personnelle, elle pourra être vue par les équipes que tu rejoindras.</p>
+
+      <p id="j-sondage-banner" class="sondage-banner" hidden></p>
+
+      <div class="dispo-toolbar">
+        <button id="j-mode-available" class="mode-active">✅ Marquer dispo</button>
+        <button id="j-mode-unavailable" class="secondaire">❌ Marquer pas dispo</button>
+        <button id="j-btn-toggle-marquage-rapide" class="secondaire">⚡ Marquage rapide</button>
+        <span id="j-dispo-save-status"></span>
+      </div>
+
+      <div id="j-marquage-rapide-panel" class="marquage-rapide-panel" hidden>
+        <label class="champ-label">Jours de la semaine</label>
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="j-mr-tous-jours" checked style="width:auto;" /> Tous les jours
+        </label>
+        <div class="jours-checkboxes" id="j-mr-jours"></div>
+
+        <label class="champ-label">Plage horaire (vide = toute la journée)</label>
+        <div class="grille-form">
+          <input type="time" id="j-mr-heure-debut" />
+          <input type="time" id="j-mr-heure-fin" />
+        </div>
+
+        <label class="champ-label">Période (vide = toute la grille affichée)</label>
+        <div class="grille-form">
+          <input type="date" id="j-mr-date-debut" />
+          <input type="date" id="j-mr-date-fin" />
+        </div>
+
+        <label style="display:flex;align-items:center;gap:6px;margin:8px 0;">
+          <input type="checkbox" id="j-mr-seulement-vide" style="width:auto;" /> Seulement les cases pas encore marquées (ne pas écraser ce qui est déjà rempli)
+        </label>
+
+        <div class="toolbar">
+          <button id="j-mr-mode-available" class="mode-active">✅ Dispo</button>
+          <button id="j-mr-mode-unavailable" class="secondaire">❌ Pas dispo</button>
+          <button id="j-mr-mode-clear" class="secondaire">Effacer</button>
+        </div>
+        <button id="j-btn-mr-appliquer">Appliquer</button>
+        <p class="muted" id="j-mr-result"></p>
+      </div>
+
+      <div class="grid-scroll">
+        <div id="j-dispo-grid" class="dispo-grid"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Rejoindre une équipe</h2>
+      <p class="aide">Demande à ton capitaine le code de son équipe (6 caractères) et entre-le ici pour rejoindre son effectif.</p>
+      <div class="grille-form">
+        <input id="j-code-equipe" placeholder="Code d'équipe (ex : AB12CD)" style="text-transform:uppercase;" />
+        <button id="j-btn-rejoindre">Rejoindre</button>
+      </div>
+      <p id="j-rejoindre-result" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Mes équipes</h2>
+      <div id="j-mes-equipes"><p class="muted">Tu ne fais partie d'aucune équipe pour l'instant.</p></div>
+    </div>
+
+    <div class="card">
+      <p class="muted">À venir : sonder tes coéquipiers sur des créneaux précis, déclarer des créneaux bloqués récurrents (cours, travail...).</p>
+    </div>
+  </div>
+</main>
+
+<script type="module" src="joueur.js"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import {
   watchTournaments, getTournament, watchTeams, watchMatches,
   findTeamByPassword, updateTeam, addTeamMember, removeTeamMember,
-  setTeamAvailability,
+  setTeamAvailability, getPlayersByIds,
 } from "./db.js";
 import { computeStandings } from "./schedule.js";
 import * as Grid from "./grid.js";
@@ -185,11 +185,13 @@ function renderMyTeam() {
     .join("");
 
   // composition
+  document.getElementById("mon-code-equipe").textContent = teamFraiche.codeEquipe || "-";
   const membres = teamFraiche.membres || [];
   document.getElementById("members-table").innerHTML = membres
     .map(
       (m, i) => `<tr>
       <td>${m.nom}</td><td>${m.poste || "-"}</td><td>${m.numero || "-"}</td><td>${m.piedFort || "-"}</td>
+      <td><span class="badge ${m.type === "compte" ? "acte" : "propose"}">${m.type === "compte" ? "Compte" : "Libre"}</span></td>
       <td><button data-remove-member="${i}" class="danger">Retirer</button></td>
     </tr>`
     )
@@ -200,6 +202,108 @@ function renderMyTeam() {
       await removeTeamMember(myTeam.tournamentId, myTeam.teamId, Number(btn.dataset.removeMember));
     })
   );
+
+  renderCoequipiersDispoGrid(teamFraiche);
+}
+
+// ===================== DISPO DES COÉQUIPIERS (comptes liés) =====================
+const coequipiersDispoDates = Grid.buildDateList(new Date(), 21);
+const coequipiersDispoTimes = Grid.buildTimeSlots();
+let dernierMembresComptesKey = null; // évite de re-fetch les joueurs à chaque rendu si la liste n'a pas changé
+
+let modeSondageEquipe = false;
+let sondageEquipeSelection = new Set();
+
+document.getElementById("btn-toggle-mode-sondage-equipe").addEventListener("click", (e) => {
+  modeSondageEquipe = !modeSondageEquipe;
+  e.target.classList.toggle("mode-active", modeSondageEquipe);
+  e.target.textContent = modeSondageEquipe
+    ? "🔶 Sélection en cours (clique sur les cases)"
+    : "🔶 Sonder mes coéquipiers sur des créneaux";
+});
+
+document.getElementById("btn-sonder-equipe-appliquer").addEventListener("click", async () => {
+  if (!myTeam) return;
+  if (!sondageEquipeSelection.size) return alert("Sélectionne d'abord des créneaux (active le mode sélection).");
+  const teamFraiche = teams.find((t) => t.id === myTeam.teamId);
+  const existants = new Set(teamFraiche?.sondagesJoueurs || []);
+  sondageEquipeSelection.forEach((k) => existants.add(k));
+  await updateTeam(myTeam.tournamentId, myTeam.teamId, { sondagesJoueurs: [...existants] });
+  sondageEquipeSelection.clear();
+  document.getElementById("sondage-equipe-selection-count").textContent = "";
+  alert("Coéquipiers sondés — ces créneaux apparaîtront en orange sur leur grille perso jusqu'à leur réponse.");
+});
+
+document.getElementById("btn-sonder-equipe-vider").addEventListener("click", async () => {
+  if (!myTeam) return;
+  if (!confirm("Vider le sondage en cours pour cette équipe ?")) return;
+  await updateTeam(myTeam.tournamentId, myTeam.teamId, { sondagesJoueurs: [] });
+});
+
+async function renderCoequipiersDispoGrid(team) {
+  const container = document.getElementById("coequipiers-dispo-grid");
+  if (!container) return;
+  const membres = team?.membres || [];
+  const idsComptes = membres.filter((m) => m.type === "compte" && m.joueurId).map((m) => m.joueurId);
+  const key = idsComptes.slice().sort().join(",");
+  const statusEl = document.getElementById("sondage-equipe-status");
+  if (statusEl) {
+    const nb = (team?.sondagesJoueurs || []).length;
+    statusEl.textContent = nb
+      ? `${nb} créneau(x) actuellement sondé(s) auprès des coéquipiers.`
+      : "Aucun sondage en cours pour cette équipe.";
+  }
+  if (key === dernierMembresComptesKey && container.children.length) return; // déjà à jour
+  dernierMembresComptesKey = key;
+
+  container.innerHTML = "";
+  container.style.gridTemplateColumns = Grid.gridTemplateColumns(coequipiersDispoDates.length);
+  container.style.gridTemplateRows = Grid.gridTemplateRows(coequipiersDispoTimes.length);
+  Grid.renderGridHeaders(container, coequipiersDispoDates);
+
+  function wireSondageEquipeClick(cell, cellKey) {
+    if (sondageEquipeSelection.has(cellKey)) cell.classList.add("sondage-selected");
+    cell.addEventListener("click", () => {
+      if (!modeSondageEquipe) return;
+      if (sondageEquipeSelection.has(cellKey)) {
+        sondageEquipeSelection.delete(cellKey);
+        cell.classList.remove("sondage-selected");
+      } else {
+        sondageEquipeSelection.add(cellKey);
+        cell.classList.add("sondage-selected");
+      }
+      document.getElementById("sondage-equipe-selection-count").textContent = sondageEquipeSelection.size
+        ? `${sondageEquipeSelection.size} créneau(x) sélectionné(s)`
+        : "";
+    });
+  }
+
+  if (!idsComptes.length) {
+    Grid.renderHourRows(container, coequipiersDispoDates, coequipiersDispoTimes, (cell, { dateISO, timeLabel }) => {
+      wireSondageEquipeClick(cell, Grid.slotKey(dateISO, timeLabel));
+    });
+    return;
+  }
+
+  const joueurs = await getPlayersByIds(idsComptes);
+  const total = joueurs.length || 1;
+  Grid.renderHourRows(container, coequipiersDispoDates, coequipiersDispoTimes, (cell, { dateISO, timeLabel }) => {
+    const cellKey = Grid.slotKey(dateISO, timeLabel);
+    let dispo = 0;
+    let pasDispo = 0;
+    for (const j of joueurs) {
+      const mark = (j.dispos || {})[cellKey];
+      if (mark === "available") dispo++;
+      if (mark === "unavailable") pasDispo++;
+    }
+    if (dispo > 0) {
+      const intensite = Math.min(1, dispo / total);
+      cell.style.background = `rgba(47, 184, 92, ${0.15 + intensite * 0.65})`;
+    }
+    if (pasDispo > 0) cell.style.boxShadow = "inset 0 -3px 0 var(--rouge)";
+    if (dispo || pasDispo) cell.title = `${dispo} coéquipier(s) dispo, ${pasDispo} pas dispo`;
+    wireSondageEquipeClick(cell, cellKey);
+  });
 }
 
 document.getElementById("btn-add-member").addEventListener("click", async () => {
@@ -255,12 +359,15 @@ function renderDispoGrid() {
   dispoGridEl.style.gridTemplateColumns = Grid.gridTemplateColumns(dispoDates.length);
   dispoGridEl.style.gridTemplateRows = Grid.gridTemplateRows(dispoTimes.length);
 
+  const sondagesTournoi = new Set(currentTournament?.sondages || []);
+
   Grid.renderGridHeaders(dispoGridEl, dispoDates);
   Grid.renderHourRows(dispoGridEl, dispoDates, dispoTimes, (cell, { dateISO, timeLabel }) => {
     const key = Grid.slotKey(dateISO, timeLabel);
     const mark = dispoMarks[key];
     if (mark === "available") cell.classList.add("mark-available");
-    if (mark === "unavailable") cell.classList.add("mark-unavailable");
+    else if (mark === "unavailable") cell.classList.add("mark-unavailable");
+    else if (sondagesTournoi.has(key)) cell.classList.add("mark-sondage");
     cell.dataset.key = key;
     cell.addEventListener("mousedown", (e) => {
       e.preventDefault();
@@ -270,13 +377,27 @@ function renderDispoGrid() {
       if (isPainting) applyPaint(cell);
     });
   });
+
+  updateSondageBanner(sondagesTournoi);
+}
+
+function updateSondageBanner(sondagesTournoi) {
+  const banner = document.getElementById("sondage-banner-equipe");
+  const enAttente = [...sondagesTournoi].filter((k) => !dispoMarks[k]).length;
+  if (enAttente > 0) {
+    banner.hidden = false;
+    banner.textContent = `🔶 ${enAttente} créneau(x) sondé(s) par l'organisateur, en attente de ta réponse (repère les cases orange dans la grille).`;
+  } else {
+    banner.hidden = true;
+  }
 }
 
 function applyPaint(cell) {
   const key = cell.dataset.key;
-  cell.classList.remove("mark-available", "mark-unavailable");
+  cell.classList.remove("mark-available", "mark-unavailable", "mark-sondage");
   if (paintAction === "clear") {
     delete dispoMarks[key];
+    if ((currentTournament?.sondages || []).includes(key)) cell.classList.add("mark-sondage");
   } else {
     dispoMarks[key] = dispoMode;
     cell.classList.add(dispoMode === "available" ? "mark-available" : "mark-unavailable");
@@ -307,6 +428,7 @@ async function persistDispoMarks() {
     await setTeamAvailability(myTeam.tournamentId, myTeam.teamId, dispoMarks);
     statusEl.textContent = "Enregistré ✓";
     statusEl.className = "saved";
+    updateSondageBanner(new Set(currentTournament?.sondages || []));
   } catch (e) {
     statusEl.textContent = "Erreur d'enregistrement";
     console.error(e);
@@ -365,6 +487,7 @@ document.getElementById("btn-mr-appliquer").addEventListener("click", async () =
   const dateDebut = document.getElementById("mr-date-debut").value || null;
   const dateFin = document.getElementById("mr-date-fin").value || null;
 
+  const seulementVide = document.getElementById("mr-seulement-vide").checked;
   const cibles = [];
   dispoDates.forEach((date) => {
     const dateISO = Grid.toISODate(date);
@@ -374,7 +497,9 @@ document.getElementById("btn-mr-appliquer").addEventListener("click", async () =
     dispoTimes.forEach((timeLabel) => {
       if (heureDebut && timeLabel < heureDebut) return;
       if (heureFin && timeLabel >= heureFin) return;
-      cibles.push(Grid.slotKey(dateISO, timeLabel));
+      const key = Grid.slotKey(dateISO, timeLabel);
+      if (seulementVide && dispoMarks[key]) return;
+      cibles.push(key);
     });
   });
 

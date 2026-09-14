@@ -164,7 +164,7 @@ th { background: var(--rouge-clair); color: var(--rouge); }
   margin-bottom: 10px;
 }
 
-.dispo-toolbar button.mode-active {
+button.mode-active {
   outline: 2px solid white;
 }
 
@@ -236,6 +236,25 @@ th { background: var(--rouge-clair); color: var(--rouge); }
 .dispo-grid .cell.slot.mark-available:hover { background: #235c38; }
 .dispo-grid .cell.slot.mark-unavailable { background: #5c1414; }
 .dispo-grid .cell.slot.mark-unavailable:hover { background: #6e1919; }
+
+/* Créneau "sondé" (façon Doodle) en attente de réponse : orange, tant que
+   personne n'a cliqué dispo/pas dispo dessus — dès que c'est répondu, la
+   couleur normale (vert/rouge) reprend le dessus. */
+.dispo-grid .cell.slot.mark-sondage { background: #6e4a0f; }
+.dispo-grid .cell.slot.mark-sondage:hover { background: #855a12; }
+
+/* Cases en cours de sélection côté "je choisis quoi sonder" (avant sauvegarde) */
+.dispo-grid .cell.slot.sondage-selected { outline: 2px solid #e0b83a; outline-offset: -2px; }
+
+.sondage-banner {
+  background: #3a2f10;
+  color: #e0b83a;
+  border: 1px solid #6e4a0f;
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 0.88rem;
+}
 
 .marquage-rapide-panel {
   background: var(--fond-input);

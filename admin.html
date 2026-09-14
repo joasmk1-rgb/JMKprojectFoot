@@ -130,6 +130,10 @@
           <input type="date" id="ter-mr-date-fin" />
         </div>
 
+        <label style="display:flex;align-items:center;gap:6px;margin:8px 0;">
+          <input type="checkbox" id="ter-mr-seulement-vide" style="width:auto;" /> Seulement les cases pas encore marquées (ne pas écraser ce qui est déjà rempli)
+        </label>
+
         <div class="toolbar">
           <button id="ter-mr-mode-available" class="mode-active">✅ Utilisable</button>
           <button id="ter-mr-mode-unavailable" class="secondaire">❌ Indisponible</button>
@@ -204,6 +208,20 @@
       <div class="grid-scroll">
         <div id="admin-dispo-grid" class="dispo-grid"></div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Sonder les équipes (façon Doodle)</h2>
+      <p class="muted">Sélectionne les créneaux sur lesquels tu veux particulièrement une réponse (ex : proposition de match en dernière minute). Ils s'affichent en orange sur le calendrier de toutes les équipes tant qu'elles n'ont pas répondu dispo/pas dispo dessus.</p>
+      <div class="toolbar">
+        <button id="btn-toggle-mode-sondage" class="secondaire">🔶 Sélectionner des créneaux à sonder</button>
+        <span id="sondage-selection-count" class="muted"></span>
+      </div>
+      <div class="toolbar">
+        <button id="btn-sonder-appliquer">Sonder les créneaux sélectionnés</button>
+        <button id="btn-sonder-vider" class="danger">Vider tous les sondages en cours</button>
+      </div>
+      <p class="muted" id="sondage-tournoi-status"></p>
     </div>
   </section>
 

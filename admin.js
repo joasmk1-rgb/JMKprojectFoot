@@ -76,6 +76,10 @@ let teams = [];
 let matches = [];
 let venues = [];
 
+// ---- Sondage des équipes façon Doodle (tournoi entier) ----
+let modeSondage = false;
+let sondageSelection = new Set();
+
 // ---- Disponibilités des terrains (grille peinte, comme les équipes) ----
 let selectedVenueId = null;
 let terrainDispoMode = "available";
@@ -136,11 +140,39 @@ function init() {
       document.getElementById(`tab-${btn.dataset.tab}`).hidden = false;
       if (btn.dataset.tab === "resultats") renderResultsForm();
       if (btn.dataset.tab === "classement") renderStandings();
-      if (btn.dataset.tab === "dispos") renderAdminDispoGrid();
+      if (btn.dataset.tab === "dispos") {
+        renderAdminDispoGrid();
+        updateSondageStatus();
+      }
     });
   });
 
   document.getElementById("dispo-view-select").addEventListener("change", renderAdminDispoGrid);
+
+  document.getElementById("btn-toggle-mode-sondage").addEventListener("click", (e) => {
+    modeSondage = !modeSondage;
+    e.target.classList.toggle("mode-active", modeSondage);
+    e.target.textContent = modeSondage ? "🔶 Sélection en cours (clique sur les cases)" : "🔶 Sélectionner des créneaux à sonder";
+  });
+
+  document.getElementById("btn-sonder-appliquer").addEventListener("click", async () => {
+    if (!sondageSelection.size) return alert("Sélectionne d'abord des créneaux (active le mode sélection).");
+    const existants = new Set(currentTournament.sondages || []);
+    sondageSelection.forEach((k) => existants.add(k));
+    await updateTournament(currentTournamentId, { sondages: [...existants] });
+    currentTournament = await getTournament(currentTournamentId);
+    sondageSelection.clear();
+    renderAdminDispoGrid();
+    updateSondageStatus();
+    alert("Créneaux sondés — ils apparaîtront en orange chez les équipes concernées jusqu'à leur réponse.");
+  });
+
+  document.getElementById("btn-sonder-vider").addEventListener("click", async () => {
+    if (!confirm("Vider tous les créneaux sondés en cours pour ce tournoi ?")) return;
+    await updateTournament(currentTournamentId, { sondages: [] });
+    currentTournament = await getTournament(currentTournamentId);
+    updateSondageStatus();
+  });
 
   document.getElementById("btn-add-admin").addEventListener("click", async () => {
     const nom = document.getElementById("ad-nom").value.trim();
@@ -235,6 +267,7 @@ function init() {
     const dateDebut = document.getElementById("ter-mr-date-debut").value || null;
     const dateFin = document.getElementById("ter-mr-date-fin").value || null;
 
+    const seulementVide = document.getElementById("ter-mr-seulement-vide").checked;
     const cibles = [];
     terrainDispoDates.forEach((date) => {
       const dateISO = Grid.toISODate(date);
@@ -244,7 +277,9 @@ function init() {
       terrainDispoTimes.forEach((timeLabel) => {
         if (heureDebut && timeLabel < heureDebut) return;
         if (heureFin && timeLabel >= heureFin) return;
-        cibles.push(Grid.slotKey(dateISO, timeLabel));
+        const key = Grid.slotKey(dateISO, timeLabel);
+        if (seulementVide && terrainDispoMarks[key]) return;
+        cibles.push(key);
       });
     });
 
@@ -727,6 +762,23 @@ function renderAdminDispoGrid() {
   container.style.gridTemplateRows = Grid.gridTemplateRows(adminDispoTimes.length);
   Grid.renderGridHeaders(container, adminDispoDates);
 
+  function wireSondageClick(cell, key) {
+    if (sondageSelection.has(key)) cell.classList.add("sondage-selected");
+    cell.addEventListener("click", () => {
+      if (!modeSondage) return;
+      if (sondageSelection.has(key)) {
+        sondageSelection.delete(key);
+        cell.classList.remove("sondage-selected");
+      } else {
+        sondageSelection.add(key);
+        cell.classList.add("sondage-selected");
+      }
+      document.getElementById("sondage-selection-count").textContent = sondageSelection.size
+        ? `${sondageSelection.size} créneau(x) sélectionné(s)`
+        : "";
+    });
+  }
+
   if (mode === "combinee") {
     const totalEquipes = teams.length || 1;
     Grid.renderHourRows(container, adminDispoDates, adminDispoTimes, (cell, { dateISO, timeLabel }) => {
@@ -748,6 +800,7 @@ function renderAdminDispoGrid() {
       if (dispo || pasDispo) {
         cell.title = `${dispo} équipe(s) dispo, ${pasDispo} pas dispo`;
       }
+      wireSondageClick(cell, key);
     });
   } else {
     const team = teams.find((t) => t.id === mode);
@@ -756,8 +809,18 @@ function renderAdminDispoGrid() {
       const mark = team?.dispos?.[key];
       if (mark === "available") cell.classList.add("mark-available");
       if (mark === "unavailable") cell.classList.add("mark-unavailable");
+      wireSondageClick(cell, key);
     });
   }
+}
+
+function updateSondageStatus() {
+  const el = document.getElementById("sondage-tournoi-status");
+  if (!el) return;
+  const nb = (currentTournament?.sondages || []).length;
+  el.textContent = nb
+    ? `${nb} créneau(x) actuellement sondé(s) pour ce tournoi (en attente de réponse chez au moins une équipe).`
+    : "Aucun créneau sondé en cours pour ce tournoi.";
 }
 
 function renderAdmins(admins) {
