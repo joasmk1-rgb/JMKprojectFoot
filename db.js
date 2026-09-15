@@ -390,6 +390,84 @@ export async function getEquipesForPlayer(joueurId) {
     .map((d) => ({ id: d.id, ...d.data() }));
 }
 
+// ---------- Palmarès global ----------
+// Toutes les inscriptions (équipe ↔ tournoi) du hub entier, avec le nom du
+// tournoi déjà attaché — sert de base brute au calcul du palmarès global par
+// joueur (participations/victoires), fait ensuite côté admin.js avec
+// stadeAtteintEquipe (schedule.js) et les matchs de chaque tournoi.
+export async function getToutesInscriptions() {
+  const [inscriptionsSnap, tournamentsSnap] = await Promise.all([
+    getDocs(collectionGroup(db, "inscriptions")),
+    getDocs(collection(db, "tournaments")),
+  ]);
+  const tournamentParId = new Map(tournamentsSnap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+  return inscriptionsSnap.docs
+    .map((d) => {
+      const tournamentId = d.ref.parent.parent.id;
+      const tournoi = tournamentParId.get(tournamentId);
+      if (!tournoi) return null; // inscription orpheline (tournoi supprimé entre-temps)
+      return { equipeId: d.id, tournamentId, tournoi, ...d.data() };
+    })
+    .filter((r) => r !== null);
+}
+
+// ---------- Fusion de deux profils joueur (doublons/alias) ----------
+// Fusionne "idASupprimer" dans "idPrincipal" — sauf si les deux comptes sont
+// déjà revendiqués (deux vraies personnes distinctes avec un mot de passe,
+// on refuse de choisir à leur place). Si l'un des deux est revendiqué, c'est
+// TOUJOURS lui qui survit, peu importe l'ordre passé en argument. Le nom du
+// profil supprimé est gardé en alias sur le survivant, et toutes les
+// références (effectifs par tournoi, effectif "compte" vivant, arbitrages)
+// sont réécrites vers le survivant avant suppression du doublon.
+export async function fusionnerJoueurs(idPrincipal, idASupprimer) {
+  const [snapA, snapB] = await Promise.all([
+    getDoc(doc(db, "joueurs", idPrincipal)),
+    getDoc(doc(db, "joueurs", idASupprimer)),
+  ]);
+  if (!snapA.exists() || !snapB.exists()) throw new Error("Un des deux profils n'existe plus.");
+  const a = { id: snapA.id, ...snapA.data() };
+  const b = { id: snapB.id, ...snapB.data() };
+  if (a.revendique && b.revendique) {
+    throw new Error("Les deux profils sont déjà revendiqués (deux comptes réels) — fusion refusée.");
+  }
+
+  const survivant = a.revendique ? a : b.revendique ? b : a; // si aucun n'est revendiqué, on garde l'ordre demandé
+  const perdant = survivant.id === a.id ? b : a;
+
+  const aliases = [...new Set([...(survivant.aliases || []), perdant.nom, ...(perdant.aliases || [])])].filter(
+    (nom) => normaliseNomSimple(nom) !== normaliseNomSimple(survivant.nom)
+  );
+  await updateDoc(doc(db, "joueurs", survivant.id), { aliases });
+
+  // Réécrit toutes les références au profil perdant dans les inscriptions
+  // (membresHistorique par tournoi + arbitrage sur les matchs).
+  const inscriptionsSnap = await getDocs(collectionGroup(db, "inscriptions"));
+  for (const d of inscriptionsSnap.docs) {
+    const membresHistorique = d.data().membresHistorique || [];
+    if (!membresHistorique.some((m) => m.joueurId === perdant.id)) continue;
+    const maj = membresHistorique.map((m) => (m.joueurId === perdant.id ? { ...m, joueurId: survivant.id } : m));
+    await updateDoc(d.ref, { membresHistorique: maj });
+  }
+
+  // Effectif "compte" vivant sur les équipes globales.
+  const equipesSnap = await getDocs(collection(db, "equipes"));
+  for (const d of equipesSnap.docs) {
+    const membres = d.data().membres || [];
+    if (!membres.some((m) => m.joueurId === perdant.id)) continue;
+    const maj = membres.map((m) => (m.joueurId === perdant.id ? { ...m, joueurId: survivant.id } : m));
+    await updateDoc(d.ref, { membres: maj });
+  }
+
+  // Arbitrages déjà assignés au profil perdant.
+  const matchsSnap = await getDocs(query(collectionGroup(db, "matches"), where("arbitreId", "==", perdant.id)));
+  for (const d of matchsSnap.docs) {
+    await updateDoc(d.ref, { arbitreId: survivant.id });
+  }
+
+  await deleteDoc(doc(db, "joueurs", perdant.id));
+  return survivant.id;
+}
+
 // ---------- Demandes d'adhésion à une équipe (inscription publique) ----------
 // Sur la page publique, un joueur sans équipe peut demander à rejoindre une
 // équipe déjà inscrite à un tournoi plutôt que de saisir un code — la

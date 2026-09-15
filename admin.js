@@ -5,6 +5,7 @@ import {
   watchPlayers, updatePlayer, deletePlayer, getInscriptionsForEquipe,
   createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
   addInscriptionMembre, removeInscriptionMembre, createPlayerNonRevendique,
+  getToutesInscriptions, fusionnerJoueurs,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe, getInscriptions,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch, updateMatch,
@@ -103,6 +104,40 @@ const terrainDispoTimes = Grid.buildTimeSlots();
 // ---- Sondage des équipes façon Doodle (tournoi entier) ----
 let modeSondage = false;
 let sondageSelection = new Set();
+let sondageTerrainIds = new Set();
+
+function renderSondageTournoiSelect() {
+  const select = document.getElementById("sondage-tournoi-select");
+  if (!select) return;
+  select.innerHTML = tournamentsList
+    .map((t) => `<option value="${t.id}">${t.historique ? "🗄 " : ""}${t.nom}</option>`)
+    .join("");
+  if (currentTournamentId) select.value = currentTournamentId;
+}
+
+function renderSondageTerrainsChecklist() {
+  const container = document.getElementById("sondage-terrains-checklist");
+  if (!container) return;
+  if (!venues.length) {
+    container.innerHTML = "Aucun terrain alloué à ce tournoi.";
+    sondageTerrainIds.clear();
+    return;
+  }
+  container.innerHTML = venues
+    .map(
+      (v) => `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <input type="checkbox" class="sondage-terrain-check" value="${v.id}" style="width:auto;" ${sondageTerrainIds.has(v.id) ? "checked" : ""} /> ${v.nom}
+    </label>`
+    )
+    .join("");
+  container.querySelectorAll(".sondage-terrain-check").forEach((cb) =>
+    cb.addEventListener("change", (e) => {
+      if (e.target.checked) sondageTerrainIds.add(e.target.value);
+      else sondageTerrainIds.delete(e.target.value);
+      renderAdminDispoGrid();
+    })
+  );
+}
 
 let initDone = false;
 
@@ -147,6 +182,7 @@ function init() {
     }
     renderChampTournoisChecklist();
     renderChampionnats();
+    renderSondageTournoiSelect();
   });
 
   watchChampionnats((list) => {
@@ -167,6 +203,10 @@ function init() {
   });
 
   document.getElementById("select-tournament").addEventListener("change", (e) => {
+    selectTournament(e.target.value);
+  });
+
+  document.getElementById("sondage-tournoi-select").addEventListener("change", (e) => {
     selectTournament(e.target.value);
   });
 
@@ -345,53 +385,25 @@ function init() {
   });
 
   // ---- Détection de noms proches (équipes + joueurs, sur tout le hub) ----
-  document.getElementById("btn-verifier-doublons").addEventListener("click", async () => {
-    const entreesEquipes = equipesGlobal.map((e) => ({ nom: e.nom, source: "équipe" }));
-    const clustersEquipes = regrouperNomsProches(entreesEquipes);
+  document.getElementById("btn-verifier-doublons").addEventListener("click", lancerVerificationDoublons);
 
-    const entreesJoueurs = [];
-    // Effectif "compte" permanent de chaque équipe.
-    equipesGlobal.forEach((e) => (e.membres || []).forEach((m) => entreesJoueurs.push({ nom: m.nom, source: e.nom })));
-    // + effectifs importés par tournoi (c'est typiquement là que se cachent
-    // les "Anas K" / "Anas" du même joueur, orthographiés différemment
-    // selon le tournoi source).
-    const inscriptionsParTournoi = await Promise.all(tournamentsList.map((t) => getInscriptions(t.id)));
-    inscriptionsParTournoi.forEach((liste, i) => {
-      const nomTournoi = tournamentsList[i].nom;
-      liste.forEach((insc) => {
-        const equipeId = insc.equipeId || insc.id;
-        const nomEquipe = equipesGlobal.find((e) => e.id === equipeId)?.nom || "?";
-        (insc.membresHistorique || []).forEach((m) =>
-          entreesJoueurs.push({ nom: m.nom, source: `${nomEquipe} — ${nomTournoi}` })
-        );
-      });
-    });
-    const clustersJoueurs = regrouperNomsProches(entreesJoueurs);
-
-    const container = document.getElementById("doublons-result");
-    if (!clustersEquipes.length && !clustersJoueurs.length) {
-      container.innerHTML = `<p class="muted">Aucun nom proche détecté parmi les ${equipesGlobal.length} équipe(s) et leurs joueurs.</p>`;
-      return;
+  // ---- Palmarès global (participation/victoires par joueur, tout le hub) ----
+  document.getElementById("btn-calculer-palmares").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-calculer-palmares");
+    const container = document.getElementById("palmares-result");
+    btn.disabled = true;
+    btn.textContent = "Calcul en cours...";
+    container.innerHTML = `<p class="muted">Analyse de tous les tournois et matchs...</p>`;
+    try {
+      const stats = await calculerPalmaresGlobal();
+      afficherPalmaresGlobal(stats);
+    } catch (e) {
+      console.error(e);
+      container.innerHTML = `<p class="muted">Erreur pendant le calcul : ${e.message || e}</p>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "📊 Calculer le palmarès";
     }
-
-    let html = "";
-    if (clustersEquipes.length) {
-      html += `<p class="champ-label">Équipes aux noms proches</p>` + clustersEquipes
-        .map((c) => `<p class="creneau-row">${c.items.map((i) => `<strong>${i.nom}</strong>`).join(" &nbsp;~&nbsp; ")}</p>`)
-        .join("");
-    }
-    if (clustersJoueurs.length) {
-      html += `<p class="champ-label" style="margin-top:14px;">Joueurs aux noms proches (entre toutes les équipes du hub)</p>` + clustersJoueurs
-        .map(
-          (c) =>
-            `<p class="creneau-row">${c.items
-              .map((i) => `<strong>${i.nom}</strong> <span class="muted">(${i.source})</span>`)
-              .join(" &nbsp;~&nbsp; ")}</p>`
-        )
-        .join("");
-    }
-    html += `<p class="muted" style="margin-top:10px;">Rien n'est fusionné automatiquement — vérifie chaque groupe et retire les doublons à la main via "Voir composition" sur l'équipe concernée.</p>`;
-    container.innerHTML = html;
   });
 
   // ---- Équipes : créer (globale) + inscrire automatiquement à ce tournoi ----
@@ -1062,6 +1074,8 @@ let unsubMatches = null;
 function selectTournament(id) {
   currentTournamentId = id;
   document.getElementById("select-tournament").value = id;
+  const sondageSelect = document.getElementById("sondage-tournoi-select");
+  if (sondageSelect) sondageSelect.value = id;
   document.getElementById("tabs").hidden = false;
 
   if (unsubInscriptions) unsubInscriptions();
@@ -1126,6 +1140,8 @@ function recomputeVenues() {
   const ids = new Set(currentTournament?.terrainIds || []);
   venues = terrainsGlobal.filter((t) => ids.has(t.id));
   renderTournoiSettings();
+  sondageTerrainIds.clear(); // le tournoi (donc les terrains alloués) a changé — filtre remis à zéro
+  renderSondageTerrainsChecklist();
 }
 
 // ---------- Onglet "Tournoi" : réglages + vue d'ensemble ----------
@@ -2016,10 +2032,20 @@ function renderAdminDispoGrid() {
   container.style.gridTemplateRows = Grid.gridTemplateRows(adminDispoTimes.length);
   Grid.renderGridHeaders(container, adminDispoDates);
 
+  function creneauUtilisablePourTerrains(key) {
+    if (!sondageTerrainIds.size) return true; // pas de filtre = tout utilisable
+    return [...sondageTerrainIds].every((id) => venues.find((v) => v.id === id)?.dispos?.[key] === "available");
+  }
+
   function wireSondageClick(cell, key) {
     if (sondageSelection.has(key)) cell.classList.add("sondage-selected");
+    if (modeSondage && !creneauUtilisablePourTerrains(key)) {
+      cell.classList.add("sondage-terrain-indispo");
+      cell.title = "Terrain(s) sélectionné(s) pas libre(s) à ce créneau — non sondable.";
+    }
     cell.addEventListener("click", () => {
       if (!modeSondage) return;
+      if (!creneauUtilisablePourTerrains(key)) return; // filtre terrain : créneau non sondable
       if (sondageSelection.has(key)) {
         sondageSelection.delete(key);
         cell.classList.remove("sondage-selected");
@@ -2236,6 +2262,186 @@ function nomsProches(a, b) {
   if (na.length >= 3 && nb.length >= 3 && (na.startsWith(nb) || nb.startsWith(na))) return true;
   const seuil = Math.min(na.length, nb.length) <= 4 ? 1 : 2;
   return distanceLevenshtein(na, nb) <= seuil;
+}
+
+// ---- Palmarès global (participation/victoires par joueur, tout le hub) ----
+// Pour chaque inscription (équipe ↔ tournoi) du hub entier, on regarde le
+// stade atteint par cette équipe dans CE tournoi (stadeAtteintEquipe) et on
+// crédite chaque joueur qui en faisait partie — que ce soit via l'effectif
+// "compte" vivant de l'équipe (rejoint via code) ou via l'effectif importé
+// spécifique à ce tournoi (membresHistorique). Un joueur qui a joué dans
+// plusieurs équipes/tournois cumule ses stats sur toutes ses participations.
+async function calculerPalmaresGlobal() {
+  const inscriptions = await getToutesInscriptions();
+  const equipeParId = new Map(equipesGlobal.map((e) => [e.id, e]));
+  const joueurParId = new Map(joueursGlobal.map((j) => [j.id, j]));
+
+  const matchsParTournoi = new Map(); // tournamentId -> matchs (cache, un seul fetch par tournoi)
+  async function matchsDe(tournamentId) {
+    if (!matchsParTournoi.has(tournamentId)) matchsParTournoi.set(tournamentId, await getMatches(tournamentId));
+    return matchsParTournoi.get(tournamentId);
+  }
+
+  const statsParJoueur = new Map(); // joueurId -> { nom, joues, gagnes, finales }
+  function credite(joueurId, nom, champ) {
+    if (!joueurId) return;
+    if (!statsParJoueur.has(joueurId)) {
+      statsParJoueur.set(joueurId, { joueurId, nom, joues: 0, gagnes: 0, finales: 0 });
+    }
+    statsParJoueur.get(joueurId)[champ]++;
+  }
+
+  for (const insc of inscriptions) {
+    const equipe = equipeParId.get(insc.equipeId);
+    const membresHistorique = insc.membresHistorique || [];
+    const membresCompte = equipe ? (equipe.membres || []).filter((m) => m.type === "compte") : [];
+
+    // Union des joueurId de cette équipe pour CE tournoi (historique + compte
+    // vivant), dédupliqués — un même joueur ne doit être crédité qu'une fois
+    // par tournoi même s'il apparaît des deux côtés.
+    const joueurIds = new Set();
+    membresHistorique.forEach((m) => m.joueurId && joueurIds.add(m.joueurId));
+    membresCompte.forEach((m) => m.joueurId && joueurIds.add(m.joueurId));
+    if (!joueurIds.size) continue;
+
+    const matchsDuTournoi = await matchsDe(insc.tournamentId);
+    const { stade } = stadeAtteintEquipe(insc.equipeId, matchsDuTournoi);
+
+    for (const joueurId of joueurIds) {
+      const nom = joueurParId.get(joueurId)?.nom
+        || membresHistorique.find((m) => m.joueurId === joueurId)?.nom
+        || membresCompte.find((m) => m.joueurId === joueurId)?.nom
+        || "?";
+      credite(joueurId, nom, "joues");
+      if (stade === "champion") credite(joueurId, nom, "gagnes");
+      if (stade === "champion" || stade === "finaliste") credite(joueurId, nom, "finales");
+    }
+  }
+
+  return [...statsParJoueur.values()].sort((a, b) => b.gagnes - a.gagnes || b.joues - a.joues || a.nom.localeCompare(b.nom));
+}
+
+function afficherPalmaresGlobal(stats) {
+  const container = document.getElementById("palmares-result");
+  if (!stats.length) {
+    container.innerHTML = `<p class="muted">Aucune participation trouvée pour l'instant.</p>`;
+    return;
+  }
+  container.innerHTML = `<table>
+    <thead><tr><th>#</th><th>Joueur</th><th>Tournois joués</th><th>Tournois gagnés</th><th>Finales atteintes</th></tr></thead>
+    <tbody>
+      ${stats
+        .map(
+          (s, i) => `<tr>
+            <td>${i + 1}</td>
+            <td>${s.nom}${s.gagnes > 0 ? " 🏆" : ""}</td>
+            <td>${s.joues}</td>
+            <td>${s.gagnes}</td>
+            <td>${s.finales}</td>
+          </tr>`
+        )
+        .join("")}
+    </tbody>
+  </table>`;
+}
+
+// ---- Détection de noms proches (équipes + joueurs, sur tout le hub) ----
+// Trois familles de résultats : équipes (affichage seul), joueurs par
+// équipe/tournoi (affichage seul, sert juste à repérer où ça se trouve), et
+// comptes joueurs réels (collection "joueurs") avec un vrai bouton
+// "Fusionner" puisque ce sont les seuls id qu'on peut réellement fusionner.
+async function lancerVerificationDoublons() {
+  const container = document.getElementById("doublons-result");
+  container.innerHTML = `<p class="muted">Recherche en cours...</p>`;
+
+  const entreesEquipes = equipesGlobal.map((e) => ({ nom: e.nom, source: "équipe" }));
+  const clustersEquipes = regrouperNomsProches(entreesEquipes);
+
+  const entreesJoueurs = [];
+  equipesGlobal.forEach((e) => (e.membres || []).forEach((m) => entreesJoueurs.push({ nom: m.nom, source: e.nom })));
+  const inscriptionsParTournoi = await Promise.all(tournamentsList.map((t) => getInscriptions(t.id)));
+  inscriptionsParTournoi.forEach((liste, i) => {
+    const nomTournoi = tournamentsList[i].nom;
+    liste.forEach((insc) => {
+      const equipeId = insc.equipeId || insc.id;
+      const nomEquipe = equipesGlobal.find((e) => e.id === equipeId)?.nom || "?";
+      (insc.membresHistorique || []).forEach((m) =>
+        entreesJoueurs.push({ nom: m.nom, source: `${nomEquipe} — ${nomTournoi}` })
+      );
+    });
+  });
+  const clustersJoueurs = regrouperNomsProches(entreesJoueurs);
+
+  // Comptes joueurs réels (collection "joueurs") — c'est là qu'on peut
+  // proposer une vraie fusion, avec id, puisque tout membresHistorique/membre
+  // "compte" pointe vers un de ces documents.
+  const entreesComptes = joueursGlobal.map((j) => ({
+    nom: j.nom,
+    id: j.id,
+    source: j.revendique ? "revendiqué" : "non revendiqué",
+  }));
+  const clustersComptes = regrouperNomsProches(entreesComptes);
+
+  if (!clustersEquipes.length && !clustersJoueurs.length && !clustersComptes.length) {
+    container.innerHTML = `<p class="muted">Aucun nom proche détecté parmi les ${equipesGlobal.length} équipe(s) et les ${joueursGlobal.length} compte(s) joueur.</p>`;
+    return;
+  }
+
+  let html = "";
+  if (clustersComptes.length) {
+    html += `<p class="champ-label">Comptes joueurs à fusionner (doublons probables)</p>`;
+    html += clustersComptes
+      .map((c) => {
+        const [base, ...autres] = c.items;
+        return `<p class="creneau-row">
+          <strong>${base.nom}</strong> <span class="muted">(${base.source})</span>
+          ${autres
+            .map(
+              (i) =>
+                `&nbsp;~&nbsp; <strong>${i.nom}</strong> <span class="muted">(${i.source})</span>
+                 <button type="button" class="secondaire btn-fusionner-joueur" data-id-a="${base.id}" data-id-b="${i.id}" style="margin-left:6px;">Fusionner avec "${base.nom}"</button>`
+            )
+            .join("")}
+        </p>`;
+      })
+      .join("");
+    html += `<p class="muted" style="margin-bottom:14px;">La fusion garde le compte déjà revendiqué s'il y en a un (mot de passe conservé), déplace tout l'historique du doublon vers le survivant, et le garde en alias. Si les deux comptes sont déjà revendiqués, la fusion est refusée.</p>`;
+  }
+  if (clustersEquipes.length) {
+    html += `<p class="champ-label">Équipes aux noms proches</p>` + clustersEquipes
+      .map((c) => `<p class="creneau-row">${c.items.map((i) => `<strong>${i.nom}</strong>`).join(" &nbsp;~&nbsp; ")}</p>`)
+      .join("");
+  }
+  if (clustersJoueurs.length) {
+    html += `<p class="champ-label" style="margin-top:14px;">Joueurs aux noms proches (entre toutes les équipes du hub)</p>` + clustersJoueurs
+      .map(
+        (c) =>
+          `<p class="creneau-row">${c.items
+            .map((i) => `<strong>${i.nom}</strong> <span class="muted">(${i.source})</span>`)
+            .join(" &nbsp;~&nbsp; ")}</p>`
+      )
+      .join("");
+  }
+  html += `<p class="muted" style="margin-top:10px;">Pour les équipes et les effectifs par tournoi, rien n'est fusionné automatiquement — vérifie chaque groupe et corrige à la main via "Voir composition".</p>`;
+  container.innerHTML = html;
+
+  container.querySelectorAll(".btn-fusionner-joueur").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const idA = btn.dataset.idA;
+      const idB = btn.dataset.idB;
+      if (!confirm("Fusionner ces deux profils joueur ? Cette action est irréversible.")) return;
+      btn.disabled = true;
+      btn.textContent = "Fusion...";
+      try {
+        await fusionnerJoueurs(idA, idB);
+        await lancerVerificationDoublons();
+      } catch (e) {
+        alert("Erreur lors de la fusion : " + (e.message || e));
+        btn.disabled = false;
+        btn.textContent = `Fusionner avec "${btn.closest("p").querySelector("strong").textContent}"`;
+      }
+    });
+  });
 }
 
 // Regroupe une liste d'{ nom, source } en clusters de noms mutuellement

@@ -79,6 +79,7 @@
     <button data-tab="phase-finale">Phase finale</button>
     <button data-tab="dispos">Disponibilités</button>
     <button data-tab="joueurs">Joueurs</button>
+    <button data-tab="palmares">Palmarès</button>
     <button data-tab="admins">Administrateurs</button>
   </nav>
 
@@ -311,6 +312,14 @@
       <div class="card">
         <h2>Sonder les équipes (façon Doodle)</h2>
         <p class="muted">Sélectionne les créneaux sur lesquels tu veux particulièrement une réponse (ex : proposition de match en dernière minute). Ils s'affichent en orange sur le calendrier de toutes les équipes tant qu'elles n'ont pas répondu dispo/pas dispo dessus.</p>
+
+        <label class="champ-label">Tournoi concerné</label>
+        <select id="sondage-tournoi-select" style="width:100%;margin-bottom:12px;"></select>
+
+        <label class="champ-label">Terrain(s) concerné(s) (optionnel)</label>
+        <p class="aide">Coche un ou plusieurs terrains pour ne pouvoir sélectionner QUE les créneaux où ils sont libres — évite de sonder un horaire impossible à tenir. Rien coché = pas de filtre.</p>
+        <div id="sondage-terrains-checklist" class="muted" style="margin-bottom:12px;">Aucun terrain alloué à ce tournoi.</div>
+
         <div class="toolbar">
           <button id="btn-toggle-mode-sondage" class="secondaire">🔶 Sélectionner des créneaux à sonder</button>
           <span id="sondage-selection-count" class="muted"></span>
@@ -390,6 +399,15 @@
         <thead><tr><th><input type="checkbox" id="check-all-joueurs" /></th><th>Nom</th><th>Équipe(s) liée(s)</th><th>Compte</th><th>Arbitrage</th><th></th></tr></thead>
         <tbody id="joueurs-table"></tbody>
       </table>
+    </div>
+  </section>
+
+  <section id="tab-palmares" class="tab-content" hidden>
+    <div class="card">
+      <h2>Palmarès global des joueurs</h2>
+      <p class="muted">Classement calculé sur tout le hub : tournois joués, tournois gagnés, finales atteintes, tous tournois confondus (effectif "compte" + effectifs importés par tournoi). Calcul à la demande, sur tous les tournois et tous les matchs — peut prendre quelques secondes.</p>
+      <button id="btn-calculer-palmares">📊 Calculer le palmarès</button>
+      <div id="palmares-result" style="margin-top:14px;"></div>
     </div>
   </section>
 
