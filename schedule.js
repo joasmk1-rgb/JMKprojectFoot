@@ -142,8 +142,32 @@ export function scheduleMatches({ groupes, venues, nbMiTemps, dureeMiTemps, dur�
   return matches;
 }
 
+// Compte les cartons d'une équipe dans un match à partir de ses événements
+// (m.evenements: { type: "but"|"carton_jaune"|"carton_rouge", equipe, ... }).
+// Le score de fair-play est négatif (0 = aucun carton) pour rester cohérent
+// avec le tri générique "plus grand = mieux classé" utilisé partout ailleurs.
+const PENALITE_JAUNE = 1;
+const PENALITE_ROUGE = 3;
+
+function compterCartons(stats, matches) {
+  for (const m of matches) {
+    for (const ev of m.evenements || []) {
+      const s = stats[ev.equipe];
+      if (!s) continue;
+      if (ev.type === "carton_jaune") s.cartonsJaunes++;
+      else if (ev.type === "carton_rouge") s.cartonsRouges++;
+    }
+  }
+  for (const s of Object.values(stats)) {
+    s.fairplayScore = -(s.cartonsJaunes * PENALITE_JAUNE + s.cartonsRouges * PENALITE_ROUGE);
+  }
+}
+
 // Calcule le classement d'un groupe à partir des matchs joués, selon des
-// règles paramétrables.
+// règles paramétrables. criteres est une liste ordonnée parmi : "points",
+// "diffButs", "butsMarques", "fairplayScore" (moins de cartons = mieux
+// classé), "confrontationDirecte" (ignoré ici, seulement pertinent en tri
+// intra-groupe déjà géré par les critères précédents).
 export function computeStandings(equipes, matches, regleClassement) {
   const { pointsVictoire, pointsNul, pointsDefaite, criteres } = regleClassement;
 
@@ -160,6 +184,9 @@ export function computeStandings(equipes, matches, regleClassement) {
       butsEncaisses: 0,
       diffButs: 0,
       points: 0,
+      cartonsJaunes: 0,
+      cartonsRouges: 0,
+      fairplayScore: 0,
     };
   }
 
@@ -197,6 +224,7 @@ export function computeStandings(equipes, matches, regleClassement) {
   for (const s of Object.values(stats)) {
     s.diffButs = s.butsMarques - s.butsEncaisses;
   }
+  compterCartons(stats, matches);
 
   const classement = Object.values(stats);
   classement.sort((x, y) => {
@@ -211,10 +239,11 @@ export function computeStandings(equipes, matches, regleClassement) {
 
 // Détermine les équipes qualifiées pour la phase finale : tous les premiers
 // de chaque groupe automatiquement, puis complète avec les meilleurs
-// 2èmes/3èmes (etc.) toutes poules confondues, classés par points/diff/buts
-// (la confrontation directe n'est pas utilisable ici : des équipes de
-// groupes différents ne se sont jamais affrontées).
-export function computeQualifiers(classementsParGroupe, nbQualifies) {
+// 2èmes/3èmes (etc.) toutes poules confondues, classés selon la même
+// cascade de critères que le classement de groupe (points/diff/buts/
+// fair-play...) — la confrontation directe est ignorée ici : des équipes de
+// groupes différents ne se sont jamais affrontées.
+export function computeQualifiers(classementsParGroupe, nbQualifies, criteres = ["points", "diffButs", "butsMarques", "fairplayScore"]) {
   // classementsParGroupe: [{ groupe: "A", classement: [...] }, ...] (classement trié, position 0 = 1er)
   const qualifies = [];
 
@@ -233,9 +262,11 @@ export function computeQualifiers(classementsParGroupe, nbQualifies) {
     if (candidats.length === 0) break; // plus personne à repêcher
 
     candidats.sort((x, y) => {
-      if (y.points !== x.points) return y.points - x.points;
-      if (y.diffButs !== x.diffButs) return y.diffButs - x.diffButs;
-      return y.butsMarques - x.butsMarques;
+      for (const critere of criteres) {
+        if (critere === "confrontationDirecte") continue;
+        if (y[critere] !== x[critere]) return y[critere] - x[critere];
+      }
+      return 0;
     });
 
     for (const c of candidats) {
@@ -247,41 +278,130 @@ export function computeQualifiers(classementsParGroupe, nbQualifies) {
   return qualifies.slice(0, nbQualifies);
 }
 
-// Génère un tableau à élimination directe à partir de la liste des
-// qualifiés (seeding classique : le mieux classé affronte le moins bien
-// classé, etc.), en essayant d'éviter de faire s'affronter deux équipes
-// du même groupe de poule au premier tour si une autre option existe.
-export function generateKnockoutBracket(qualifies) {
-  const n = qualifies.length;
-  const gauche = qualifies.slice(0, n / 2);
-  const droite = qualifies.slice(n / 2).reverse();
-
-  // essaie, par simples échanges entre paires, d'éviter qu'une paire
-  // oppose deux équipes venues du même groupe de poule (si une autre
-  // combinaison le permet — sinon on laisse tel quel, ça peut arriver
-  // avec peu de groupes/équipes).
-  for (let i = 0; i < gauche.length; i++) {
-    if (gauche[i].groupe !== droite[i].groupe) continue;
-    const jEchange = droite.findIndex((d, j) => j !== i && d.groupe !== gauche[i].groupe && gauche[j].groupe !== droite[i].groupe);
-    if (jEchange !== -1) {
-      const tmp = droite[i];
-      droite[i] = droite[jEchange];
-      droite[jEchange] = tmp;
-    }
-  }
-
-  return gauche.map((g, i) => ({
-    phase: nommerPhase(n),
-    equipeAId: g.equipeId,
-    equipeBId: droite[i].equipeId,
-    groupe: null,
-  }));
-}
-
 function nommerPhase(nbEquipes) {
   if (nbEquipes <= 2) return "finale";
   if (nbEquipes <= 4) return "demi-finale";
   if (nbEquipes <= 8) return "quart-de-finale";
   if (nbEquipes <= 16) return "huitième-de-finale";
   return "phase-finale";
+}
+
+function prochainePuissanceDe2(n) {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+// Ordre de seeding classique d'un tableau à élimination directe (1 vs N,
+// puis 2 vs N-1 côté opposé, etc. — récursif), pour une taille qui DOIT
+// être une puissance de 2. seedOrder(8) = [1,8,4,5,2,7,3,6] : les paires
+// consécutives (1,8) (4,5) (2,7) (3,6) sont les 4 quarts, et le nichage
+// garantit que le vainqueur de (1,8) retombe sur le vainqueur de (4,5) au
+// tour suivant, comme un vrai tableau à élimination directe.
+function seedOrder(taille) {
+  if (taille === 1) return [1];
+  const prec = seedOrder(taille / 2);
+  const out = [];
+  for (const s of prec) {
+    out.push(s);
+    out.push(taille + 1 - s);
+  }
+  return out;
+}
+
+// Génère le PREMIER tour d'un tableau à élimination directe à partir de la
+// liste des qualifiés, pour n'importe quelle taille jusqu'à 16 (pas
+// seulement les puissances de 2) : les mieux classés (qualifies[0], [1]...)
+// reçoivent un "bye" (qualification directe au tour suivant, sans jouer) si
+// l'effectif ne tombe pas juste — pratique classique des coupes à effectif
+// impair. qualifies doit déjà être trié du mieux classé au moins bien classé
+// (c'est l'ordre renvoyé par computeQualifiers).
+export function generateKnockoutBracket(qualifies) {
+  const n = qualifies.length;
+  if (n < 2) return [];
+  const taille = prochainePuissanceDe2(n);
+  const nbByes = taille - n;
+
+  // seed 1..n = équipes réelles (dans l'ordre de force) ; seed n+1..taille
+  // = emplacements "bye" — donnés aux emplacements les moins forts du
+  // tableau complété, ce qui revient à exempter les nbByes meilleures
+  // équipes réelles de devoir jouer un premier tour contre un adversaire.
+  const slots = seedOrder(taille).map((seed) => (seed <= n ? qualifies[seed - 1] : null));
+
+  const matchs = [];
+  for (let i = 0; i < slots.length; i += 2) {
+    const a = slots[i];
+    const b = slots[i + 1];
+    if (a && b) {
+      matchs.push({
+        phase: nommerPhase(taille),
+        tourIndex: 0,
+        slot: i / 2,
+        equipeAId: a.equipeId,
+        equipeBId: b.equipeId,
+        groupe: null,
+        bye: false,
+      });
+    } else {
+      // Bye : l'équipe présente est qualifiée d'office, pas de vrai match.
+      const presente = a || b;
+      matchs.push({
+        phase: nommerPhase(taille),
+        tourIndex: 0,
+        slot: i / 2,
+        equipeAId: presente.equipeId,
+        equipeBId: null,
+        groupe: null,
+        bye: true,
+        statut: "acté",
+        scoreA: null,
+        scoreB: null,
+      });
+    }
+  }
+  if (nbByes > 0) {
+    matchs._nbByes = nbByes; // info non persistée, utile pour le message admin
+  }
+  return matchs;
+}
+
+// Calcule le vainqueur d'un match de phase finale (bye ou score décisif).
+// Renvoie null si le match n'a pas encore de résultat exploitable (pas de
+// score, ou match nul sans tirs au but — impossible à trancher seul).
+function vainqueurMatch(m) {
+  if (m.bye) return m.equipeAId;
+  if (m.scoreA === null || m.scoreA === undefined || m.scoreB === null || m.scoreB === undefined) return null;
+  if (m.scoreA === m.scoreB) return null; // nul : il faut une séance de tirs au but encodée comme un score décisif
+  return m.scoreA > m.scoreB ? m.equipeAId : m.equipeBId;
+}
+
+// À partir de tous les matchs d'un même tour (même tourIndex, triés par
+// slot), génère le tour suivant. Renvoie { pret: false } si un match du tour
+// n'a pas encore de résultat exploitable, { champion: equipeId, matchs: [] }
+// si c'était la finale, ou { matchs: [...] } pour le tour suivant à créer.
+export function genererTourSuivant(matchsDuTour) {
+  const tries = [...matchsDuTour].sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+  const vainqueurs = [];
+  for (const m of tries) {
+    const v = vainqueurMatch(m);
+    if (!v) return { pret: false };
+    vainqueurs.push(v);
+  }
+  if (vainqueurs.length <= 1) {
+    return { champion: vainqueurs[0] || null, matchs: [] };
+  }
+  const tourSuivant = (tries[0]?.tourIndex ?? 0) + 1;
+  const matchs = [];
+  for (let i = 0; i < vainqueurs.length; i += 2) {
+    matchs.push({
+      phase: nommerPhase(vainqueurs.length),
+      tourIndex: tourSuivant,
+      slot: i / 2,
+      equipeAId: vainqueurs[i],
+      equipeBId: vainqueurs[i + 1],
+      groupe: null,
+      bye: false,
+    });
+  }
+  return { matchs };
 }

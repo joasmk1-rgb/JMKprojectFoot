@@ -69,6 +69,7 @@
     <button data-tab="calendrier">Calendrier</button>
     <button data-tab="resultats">Résultats</button>
     <button data-tab="classement">Classement</button>
+    <button data-tab="championnats">Championnats</button>
     <button data-tab="phase-finale">Phase finale</button>
     <button data-tab="dispos">Disponibilités</button>
     <button data-tab="admins">Administrateurs</button>
@@ -162,11 +163,31 @@
     <div id="classements-container"></div>
   </section>
 
+  <section id="tab-championnats" class="tab-content" hidden>
+    <div class="card">
+      <h2>Créer un championnat</h2>
+      <p class="muted">Un championnat cumule les résultats de plusieurs tournois dans un seul classement (façon classement de saison). Choisis toi-même quels tournois en font partie.</p>
+      <input id="champ-nom" placeholder="Nom du championnat" style="width:100%;margin-bottom:10px;" />
+      <label style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+        <input type="checkbox" id="champ-inclure-finale" checked style="width:auto;" /> Compter aussi les matchs de phase finale (pas seulement les poules)
+      </label>
+      <p class="champ-label">Tournois inclus</p>
+      <div id="champ-tournois-checklist" class="muted">Aucun tournoi créé pour l'instant.</div>
+      <button id="btn-creer-championnat" style="margin-top:10px;">Créer le championnat</button>
+    </div>
+    <div id="championnats-liste"></div>
+  </section>
+
   <section id="tab-phase-finale" class="tab-content" hidden>
     <div class="card">
       <h2>Générer la phase finale</h2>
-      <p class="muted">Prend automatiquement tous les premiers de groupe, puis complète avec les meilleurs 2èmes/3èmes (selon le nombre de qualifiés défini à la création du tournoi) pour générer le tableau à élimination directe.</p>
+      <p class="muted">Prend automatiquement tous les premiers de groupe, puis complète avec les meilleurs 2èmes/3èmes (selon le nombre de qualifiés défini à la création du tournoi, jusqu'à 16) pour générer le tableau à élimination directe — classement fair-play (cartons) inclus dans les critères. Si l'effectif qualifié ne tombe pas sur une puissance de 2, les mieux classé(e)s reçoivent un "bye" (qualifié d'office, pas de match) au premier tour.</p>
       <button id="btn-generate-finale">Générer la phase finale</button>
+    </div>
+    <div class="card">
+      <h2>Tour suivant</h2>
+      <p class="muted">Une fois tous les matchs du tour affiché ci-dessous joués (score encodé dans l'onglet Calendrier), génère le tour suivant (demi-finale, finale...) à partir des vainqueurs. Annonce le/la champion(ne) une fois la finale jouée.</p>
+      <button id="btn-generer-tour-suivant">Générer le tour suivant</button>
     </div>
     <div class="card">
       <h2>Matchs de phase finale</h2>

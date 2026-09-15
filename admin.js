@@ -1,15 +1,16 @@
 import { ADMIN_PASSPHRASE } from "./config.js";
 import {
   createTournament, watchTournaments, getTournament, updateTournament,
+  createChampionnat, watchChampionnats, updateChampionnat, deleteChampionnat, getMatches,
   createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
-  saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch,
+  saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch, updateMatch,
   getAdmins, watchAdmins, createAdmin, deleteAdmin,
 } from "./db.js";
 import {
   computeNbGroups, splitIntoGroups, scheduleMatches, computeStandings,
-  computeQualifiers, generateKnockoutBracket,
+  computeQualifiers, generateKnockoutBracket, genererTourSuivant,
 } from "./schedule.js";
 import * as Grid from "./grid.js";
 
@@ -84,6 +85,9 @@ let venues = []; // terrains UTILISÉS par ce tournoi (sous-ensemble de terrains
 
 let matches = [];
 
+let tournamentsList = []; // TOUS les tournois du hub (pour construire la checklist des championnats)
+let championnatsList = [];
+
 // ---- Disponibilités des terrains (grille peinte) ----
 let selectedVenueId = null;
 let terrainDispoMode = "available";
@@ -125,6 +129,7 @@ function init() {
   });
 
   watchTournaments((list) => {
+    tournamentsList = list;
     const select = document.getElementById("select-tournament");
     select.innerHTML = list
       .map((t) => `<option value="${t.id}">${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}</option>`)
@@ -132,6 +137,25 @@ function init() {
     if (list.length && !currentTournamentId) {
       selectTournament(list[0].id);
     }
+    renderChampTournoisChecklist();
+    renderChampionnats();
+  });
+
+  watchChampionnats((list) => {
+    championnatsList = list;
+    renderChampionnats();
+  });
+
+  document.getElementById("btn-creer-championnat").addEventListener("click", async () => {
+    const nom = document.getElementById("champ-nom").value.trim();
+    if (!nom) return alert("Le nom du championnat est obligatoire.");
+    const tournamentIds = [...document.querySelectorAll("#champ-tournois-checklist input:checked")].map((c) => c.value);
+    if (tournamentIds.length < 2) {
+      if (!confirm("Moins de 2 tournois sélectionnés — un championnat à un seul tournoi n'a pas grand intérêt. Créer quand même ?")) return;
+    }
+    const inclurePhaseFinale = document.getElementById("champ-inclure-finale").checked;
+    await createChampionnat({ nom, tournamentIds, inclurePhaseFinale });
+    document.getElementById("champ-nom").value = "";
   });
 
   document.getElementById("select-tournament").addEventListener("change", (e) => {
@@ -548,6 +572,14 @@ function init() {
       // de passe capitaine temporaire à communiquer manuellement — puis
       // l'inscrit à ce tournoi avec son groupe.
       const nomVersId = new Map(equipesGlobal.map((e) => [normaliseNom(e.nom), e.id]));
+      // Retient le groupe de chaque équipe déjà connu (import en cours ou
+      // déjà inscrite avant l'import) pour pouvoir le retrouver au moment
+      // des matchs, même si le fichier matchs.csv n'a pas de colonne
+      // "groupe" — sinon un match importé sans groupe ne matche jamais avec
+      // le classement par groupe (qui, lui, se base sur les équipes) et le
+      // classement reste vide en permanence, comme s'il n'était rattaché à
+      // aucun tournoi.
+      const equipeIdVersGroupe = new Map(teams.filter((t) => t.groupe).map((t) => [t.id, t.groupe]));
       const nouveauxMotsDePasse = [];
       for (const row of rowsEquipes) {
         const nom = champCsv(row, "nom").trim();
@@ -565,6 +597,7 @@ function init() {
         const groupeCsv = champCsv(row, "groupe").trim();
         if (groupeCsv) {
           await updateInscription(currentTournamentId, equipeId, { groupe: groupeCsv });
+          equipeIdVersGroupe.set(equipeId, groupeCsv);
         }
       }
 
@@ -604,10 +637,16 @@ function init() {
         if (!idA) nomsIntrouvables.add(nomEquipeA || "(colonne équipeA vide)");
         if (!idB) nomsIntrouvables.add(nomEquipeB || "(colonne équipeB vide)");
         if (!idA || !idB) continue;
+        // Si le CSV des matchs n'a pas de colonne "groupe" (ou qu'elle est
+        // vide pour cette ligne), on retombe sur le groupe déjà connu de
+        // l'équipe A (déduit du fichier équipes ou d'une inscription
+        // existante) — indispensable pour que le classement par groupe
+        // retrouve ensuite ce match.
+        const groupeCsvMatch = champCsv(row, "groupe").trim();
         matchsCandidats.push({
           equipeAId: idA,
           equipeBId: idB,
-          groupe: champCsv(row, "groupe").trim() || null,
+          groupe: groupeCsvMatch || equipeIdVersGroupe.get(idA) || equipeIdVersGroupe.get(idB) || null,
           phase: "poule",
           terrain: champCsv(row, "terrain").trim() || terrainParDefaut || "À préciser",
           date: champCsv(row, "date").trim() || null,
@@ -622,14 +661,23 @@ function init() {
       function signatureMatch(m) {
         return [m.equipeAId, m.equipeBId].sort().join("|") + "|" + (m.date || "") + "|" + (m.heure || "");
       }
-      const signaturesExistantes = new Set(matches.map(signatureMatch));
+      const matchsExistantsParSignature = new Map(matches.map((m) => [signatureMatch(m), m]));
       const matchsAImporter = [];
       const doublonsDetectes = [];
-      const signaturesVues = new Set(signaturesExistantes);
+      const signaturesVues = new Set(matchsExistantsParSignature.keys());
+      // Répare aussi les matchs déjà importés précédemment (avant ce
+      // correctif) dont le groupe est resté vide — sinon ils restent
+      // coincés hors de tout classement même après un ré-import.
+      let nbGroupesRepares = 0;
       for (const m of matchsCandidats) {
         const sig = signatureMatch(m);
         if (signaturesVues.has(sig)) {
           doublonsDetectes.push(m);
+          const existant = matchsExistantsParSignature.get(sig);
+          if (existant && !existant.groupe && m.groupe) {
+            await updateMatch(currentTournamentId, existant.id, { groupe: m.groupe });
+            nbGroupesRepares++;
+          }
         } else {
           signaturesVues.add(sig);
           matchsAImporter.push(m);
@@ -662,6 +710,9 @@ function init() {
       if (nomsIntrouvables.size) {
         lignes.push(`⚠️ Noms d'équipe introuvables dans le fichier matchs (vérifie l'orthographe vs le fichier équipes) : ${[...nomsIntrouvables].join(", ")}`);
       }
+      if (nbGroupesRepares) {
+        lignes.push(`🔧 ${nbGroupesRepares} match(s) déjà importé(s) précédemment avaient un groupe manquant (bug corrigé) — réparé(s), ils apparaîtront maintenant dans le classement.`);
+      }
       resultEl.innerHTML = lignes.map((l) => `<div>${l}</div>`).join("");
     } catch (e) {
       console.error(e);
@@ -689,15 +740,41 @@ function init() {
       ),
     }));
 
-    const qualifies = computeQualifiers(classementsParGroupe, currentTournament.nbQualifiesPhaseFinale);
+    if (currentTournament.nbQualifiesPhaseFinale > 16) {
+      if (!confirm(`${currentTournament.nbQualifiesPhaseFinale} qualifié(e)s, c'est au-delà de ce qui a été testé (16 max prévu) — continuer quand même ?`)) return;
+    }
+
+    const criteres = currentTournament.regleClassement?.criteres || ["points", "diffButs", "butsMarques", "fairplayScore"];
+    const qualifies = computeQualifiers(classementsParGroupe, currentTournament.nbQualifiesPhaseFinale, criteres);
     if (qualifies.length < currentTournament.nbQualifiesPhaseFinale) {
       if (!confirm(`Seulement ${qualifies.length} équipe(s) qualifiable(s) trouvée(s) (au lieu de ${currentTournament.nbQualifiesPhaseFinale}). Continuer quand même ?`)) return;
     }
+    if (qualifies.length < 2) return alert("Pas assez d'équipes qualifiables pour générer une phase finale.");
 
-    const bracket = generateKnockoutBracket(qualifies.map((q) => ({ equipeId: q.equipeId, groupe: q.groupe })));
-    const withPlaceholders = bracket.map((m) => ({ ...m, terrain: "À définir", date: null, heure: null }));
+    const bracket = generateKnockoutBracket(qualifies);
+    const nbByes = bracket.filter((m) => m.bye).length;
+    const withPlaceholders = bracket.map((m) => (m.bye ? m : { ...m, terrain: "À définir", date: null, heure: null }));
     await saveMatches(currentTournamentId, withPlaceholders);
-    alert(`Phase finale générée : ${bracket.length} match(s).`);
+    alert(
+      `Phase finale générée : ${bracket.length - nbByes} match(s) à jouer` +
+        (nbByes ? `, ${nbByes} équipe(s) qualifiée(s) d'office (bye) faute d'effectif rond.` : ".")
+    );
+  });
+
+  document.getElementById("btn-generer-tour-suivant").addEventListener("click", async () => {
+    const finale = matches.filter((m) => m.phase !== "poule");
+    if (!finale.length) return alert("Génère d'abord la phase finale.");
+    const tourMax = Math.max(...finale.map((m) => m.tourIndex ?? 0));
+    const matchsDuTour = finale.filter((m) => (m.tourIndex ?? 0) === tourMax);
+    const resultat = genererTourSuivant(matchsDuTour);
+    if (resultat.pret === false) {
+      return alert("Tous les matchs du tour affiché ne sont pas encore encodés (score décisif requis, pas de match nul sans tirs au but).");
+    }
+    if (resultat.champion) {
+      return alert(`🏆 Championne/champion du tournoi : ${teamName(resultat.champion)} !`);
+    }
+    await saveMatches(currentTournamentId, resultat.matchs.map((m) => ({ ...m, terrain: "À définir", date: null, heure: null })));
+    alert(`Tour suivant généré : ${resultat.matchs.length} match(s) (${resultat.matchs[0]?.phase}).`);
   });
 
   // ---- sélection multiple / suppression en masse (équipes inscrites, matchs, admins) ----
@@ -834,6 +911,7 @@ function renderTeams() {
           <option value="en_attente" ${t.statut === "en_attente" ? "selected" : ""}>En attente</option>
           <option value="confirmée" ${t.statut === "confirmée" ? "selected" : ""}>Confirmée</option>
           <option value="forfait" ${t.statut === "forfait" ? "selected" : ""}>Forfait</option>
+          <option value="désistée" ${t.statut === "désistée" ? "selected" : ""}>Désistée</option>
         </select>
       </td>
       <td>
@@ -843,7 +921,10 @@ function renderTeams() {
         </select>
       </td>
       <td><button class="secondaire" data-voir-composition="${t.id}">${(t.membres || []).length} joueur(s) — voir</button></td>
-      <td><button data-desinscrire="${t.id}" class="danger">Désinscrire</button></td>
+      <td>
+        <button data-desinscrire="${t.id}" class="danger">Désinscrire</button>
+        ${t.statut === "désistée" ? `<span class="badge forfait">Désistée</span>` : `<button data-desiste="${t.id}" class="danger">Se désiste (+ repêchage)</button>`}
+      </td>
     </tr>`
     )
     .join("") || `<p class="muted">Aucune équipe inscrite à ce tournoi pour l'instant.</p>`;
@@ -868,10 +949,132 @@ function renderTeams() {
   tbody.querySelectorAll("[data-voir-composition]").forEach((btn) =>
     btn.addEventListener("click", () => toggleComposition(btn.dataset.voirComposition))
   );
+  tbody.querySelectorAll("[data-desiste]").forEach((btn) =>
+    btn.addEventListener("click", () => desisterEquipe(btn.dataset.desiste))
+  );
 
   // Si une équipe était affichée en détail, on rafraîchit son contenu
   // (utile après un ajout/retrait de membre) plutôt que de la refermer.
   if (equipeCompositionOuverte) renderComposition(equipeCompositionOuverte);
+}
+
+// ---------- Désistement en cours de tournoi + repêchage ----------
+// Objectif (demandé par Joas) : si une équipe abandonne en cours de route,
+// le tournoi doit pouvoir continuer en "repêchant" un remplaçant plutôt que
+// de simplement laisser un trou dans le calendrier. Règles retenues (à
+// ajuster si ça ne correspond pas à ce qu'il a en tête) :
+//  - l'équipe désistée garde son historique (matchs déjà joués = résultats
+//    valables pour ses adversaires), elle est juste marquée "désistée" ;
+//  - ses matchs de POULE pas encore joués sont réattribués (même
+//    date/heure/terrain) à une équipe de remplacement choisie par l'admin
+//    parmi les équipes du hub pas encore inscrites à ce tournoi (il n'y a
+//    pas de classement pour les départager, donc pas de suggestion auto) ;
+//  - ses matchs de PHASE FINALE pas encore joués sont réattribués à la
+//    "meilleure équipe éliminée" du tournoi (calculée selon les mêmes
+//    critères de classement que la qualification), proposée par défaut.
+function meilleureEquipeElimineeSuggestion() {
+  const groupesNoms = [...new Set(teams.map((t) => t.groupe).filter(Boolean))].sort();
+  if (!groupesNoms.length || !currentTournament) return null;
+  const criteres = currentTournament.regleClassement?.criteres || ["points", "diffButs", "butsMarques", "fairplayScore"];
+  // Classement toutes poules confondues (juste pour repêcher un "meilleur perdant").
+  const classementGlobal = groupesNoms
+    .flatMap((g) => computeStandings(teams.filter((t) => t.groupe === g), matches.filter((m) => m.groupe === g), currentTournament.regleClassement))
+    .sort((x, y) => {
+      for (const c of criteres) {
+        if (c === "confrontationDirecte") continue;
+        if (y[c] !== x[c]) return y[c] - x[c];
+      }
+      return 0;
+    });
+  // Équipes encore "en vie" dans le tableau à élimination directe : celles
+  // apparaissant dans le dernier tour généré sans avoir perdu.
+  const finale = matches.filter((m) => m.phase !== "poule");
+  const perdantes = new Set();
+  for (const m of finale) {
+    if (m.bye) continue;
+    if (m.scoreA == null || m.scoreB == null || m.scoreA === m.scoreB) continue;
+    perdantes.add(m.scoreA > m.scoreB ? m.equipeBId : m.equipeAId);
+  }
+  const dejaEnLice = new Set(finale.map((m) => [m.equipeAId, m.equipeBId]).flat());
+  const candidat = classementGlobal.find((s) => perdantes.has(s.equipeId) || (!dejaEnLice.has(s.equipeId) && !perdantes.has(s.equipeId)));
+  return candidat || null;
+}
+
+async function desisterEquipe(equipeId) {
+  const equipe = teams.find((t) => t.id === equipeId);
+  if (!equipe) return;
+  if (!confirm(`Marquer "${equipe.nom}" comme désistée de ce tournoi ? Ses résultats déjà joués sont conservés ; ses matchs à venir seront proposés à une équipe de remplacement.`)) return;
+
+  await updateInscription(currentTournamentId, equipeId, { statut: "désistée" });
+
+  const matchsNonJoues = matches.filter(
+    (m) => !m.bye && (m.equipeAId === equipeId || m.equipeBId === equipeId) && (m.scoreA === null || m.scoreA === undefined)
+  );
+  if (!matchsNonJoues.length) {
+    alert(`"${equipe.nom}" est marquée désistée. Aucun match à venir ne la concernait, rien d'autre à faire.`);
+    return;
+  }
+
+  const matchsPoule = matchsNonJoues.filter((m) => m.groupe);
+  const matchsFinale = matchsNonJoues.filter((m) => !m.groupe);
+
+  // ---- Repêchage pour les matchs de poule ----
+  if (matchsPoule.length) {
+    const candidatsHub = equipesGlobal.filter((e) => !teams.some((t) => t.id === e.id) && e.id !== equipeId);
+    const noms = candidatsHub.map((e) => e.nom).join(", ") || "(aucune équipe libre dans le hub — crée-en une d'abord dans l'onglet Équipes)";
+    const saisie = prompt(
+      `${matchsPoule.length} match(s) de poule de "${equipe.nom}" à réattribuer.\nÉquipes du hub pas encore inscrites à ce tournoi : ${noms}\n\nTape le nom exact de l'équipe de remplacement (ou laisse vide pour juste annuler ces matchs sans remplaçant) :`
+    );
+    if (saisie && saisie.trim()) {
+      const cible = candidatsHub.find((e) => normaliseNom(e.nom) === normaliseNom(saisie.trim()));
+      if (!cible) {
+        alert("Nom non trouvé parmi les équipes du hub disponibles — les matchs de poule restent donc attribués à l'équipe désistée pour l'instant, tu pourras réessayer.");
+      } else {
+        if (!teams.some((t) => t.id === cible.id)) {
+          await inscrireEquipe(currentTournamentId, cible.id);
+          if (equipe.groupe) await updateInscription(currentTournamentId, cible.id, { groupe: equipe.groupe });
+        }
+        for (const m of matchsPoule) {
+          await updateMatch(currentTournamentId, m.id, {
+            equipeAId: m.equipeAId === equipeId ? cible.id : m.equipeAId,
+            equipeBId: m.equipeBId === equipeId ? cible.id : m.equipeBId,
+          });
+        }
+      }
+    } else {
+      for (const m of matchsPoule) await deleteMatch(currentTournamentId, m.id);
+    }
+  }
+
+  // ---- Repêchage pour les matchs de phase finale ----
+  if (matchsFinale.length) {
+    const suggestion = meilleureEquipeElimineeSuggestion();
+    const saisie = prompt(
+      `${matchsFinale.length} match(s) de phase finale de "${equipe.nom}" à réattribuer.\nMeilleure équipe repêchable suggérée : ${suggestion ? suggestion.nom : "(aucune suggestion trouvée automatiquement)"}\n\nTape le nom exact de l'équipe qui la remplace (ou laisse vide pour annuler ces matchs — l'adversaire sera alors qualifié d'office) :`,
+      suggestion ? suggestion.nom : ""
+    );
+    if (saisie && saisie.trim()) {
+      const cible = teams.find((t) => normaliseNom(t.nom) === normaliseNom(saisie.trim())) || equipesGlobal.find((e) => normaliseNom(e.nom) === normaliseNom(saisie.trim()));
+      if (!cible) {
+        alert("Nom non trouvé — les matchs de phase finale restent donc attribués à l'équipe désistée pour l'instant, tu pourras réessayer.");
+      } else {
+        for (const m of matchsFinale) {
+          await updateMatch(currentTournamentId, m.id, {
+            equipeAId: m.equipeAId === equipeId ? cible.id : m.equipeAId,
+            equipeBId: m.equipeBId === equipeId ? cible.id : m.equipeBId,
+          });
+        }
+      }
+    } else {
+      // Pas de remplaçant : l'adversaire est qualifié d'office (bye a posteriori).
+      for (const m of matchsFinale) {
+        const adversaire = m.equipeAId === equipeId ? m.equipeBId : m.equipeAId;
+        await updateMatch(currentTournamentId, m.id, { bye: true, statut: "acté", equipeAId: adversaire, equipeBId: null });
+      }
+    }
+  }
+
+  alert(`"${equipe.nom}" désistée — matchs à venir traités.`);
 }
 
 // ---------- Détail "composition d'équipe" (liste des joueurs) ----------
@@ -1006,14 +1209,32 @@ function renderMatches() {
   );
 }
 
+// Compte actuel de cartons déjà enregistrés pour un match (dérivé de
+// m.evenements) — sert à pré-remplir les champs plutôt que de repartir de 0
+// à chaque ouverture du formulaire.
+function comptesCartons(m) {
+  const c = { jaunesA: 0, rougesA: 0, jaunesB: 0, rougesB: 0 };
+  for (const ev of m.evenements || []) {
+    const cote = ev.equipe === m.equipeAId ? "A" : ev.equipe === m.equipeBId ? "B" : null;
+    if (!cote) continue;
+    if (ev.type === "carton_jaune") c[`jaunes${cote}`]++;
+    else if (ev.type === "carton_rouge") c[`rouges${cote}`]++;
+  }
+  return c;
+}
+
 function renderResultsForm() {
   const container = document.getElementById("matches-to-encode");
+  // Les matchs "bye" (qualification directe, effectif de phase finale
+  // impair) n'ont rien à encoder — déjà actés à la génération du tableau.
   container.innerHTML = matches
-    .map(
-      (m) => `
+    .filter((m) => !m.bye)
+    .map((m) => {
+      const c = comptesCartons(m);
+      return `
     <div class="card" style="margin-bottom:10px;">
       <strong>${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}</strong>
-      <span class="muted"> — ${m.groupe} — ${m.date} ${m.heure} — ${m.terrain}</span>
+      <span class="muted"> — ${m.phase === "poule" ? m.groupe : m.phase} — ${m.date || ""} ${m.heure || ""} — ${m.terrain || ""}</span>
       <div class="grille-form" style="margin-top:8px;">
         <input type="number" min="0" placeholder="Score ${teamName(m.equipeAId)}" data-score-a="${m.id}" value="${m.scoreA ?? ""}" />
         <input type="number" min="0" placeholder="Score ${teamName(m.equipeBId)}" data-score-b="${m.id}" value="${m.scoreB ?? ""}" />
@@ -1023,19 +1244,40 @@ function renderResultsForm() {
           <option value="forfait" ${m.statutMatch === "forfait" ? "selected" : ""}>Forfait</option>
           <option value="reporté" ${m.statutMatch === "reporté" ? "selected" : ""}>Reporté</option>
         </select>
-        <button data-save-result="${m.id}">Enregistrer</button>
       </div>
-    </div>`
-    )
+      <p class="muted" style="margin:6px 0 2px;">Cartons (pour le fair-play du classement) :</p>
+      <div class="grille-form">
+        <input type="number" min="0" placeholder="🟨 ${teamName(m.equipeAId)}" data-jaunes-a="${m.id}" value="${c.jaunesA}" />
+        <input type="number" min="0" placeholder="🟥 ${teamName(m.equipeAId)}" data-rouges-a="${m.id}" value="${c.rougesA}" />
+        <input type="number" min="0" placeholder="🟨 ${teamName(m.equipeBId)}" data-jaunes-b="${m.id}" value="${c.jaunesB}" />
+        <input type="number" min="0" placeholder="🟥 ${teamName(m.equipeBId)}" data-rouges-b="${m.id}" value="${c.rougesB}" />
+      </div>
+      <button data-save-result="${m.id}" style="margin-top:8px;">Enregistrer</button>
+    </div>`;
+    })
     .join("");
 
   container.querySelectorAll("[data-save-result]").forEach((btn) =>
     btn.addEventListener("click", async () => {
       const id = btn.dataset.saveResult;
+      const m = matches.find((mm) => mm.id === id);
       const scoreA = Number(container.querySelector(`[data-score-a="${id}"]`).value);
       const scoreB = Number(container.querySelector(`[data-score-b="${id}"]`).value);
       const statutMatch = container.querySelector(`[data-statut-match="${id}"]`).value;
-      await setMatchResult(currentTournamentId, id, { scoreA, scoreB, statutMatch });
+      const jaunesA = Number(container.querySelector(`[data-jaunes-a="${id}"]`).value) || 0;
+      const rougesA = Number(container.querySelector(`[data-rouges-a="${id}"]`).value) || 0;
+      const jaunesB = Number(container.querySelector(`[data-jaunes-b="${id}"]`).value) || 0;
+      const rougesB = Number(container.querySelector(`[data-rouges-b="${id}"]`).value) || 0;
+      // On ne garde que le décompte (pas de joueur/minute précis) : suffisant
+      // pour le critère fair-play du classement, sans construire tout un
+      // module arbitre pour l'instant.
+      const evenements = [
+        ...Array(jaunesA).fill({ type: "carton_jaune", equipe: m.equipeAId }),
+        ...Array(rougesA).fill({ type: "carton_rouge", equipe: m.equipeAId }),
+        ...Array(jaunesB).fill({ type: "carton_jaune", equipe: m.equipeBId }),
+        ...Array(rougesB).fill({ type: "carton_rouge", equipe: m.equipeBId }),
+      ];
+      await setMatchResult(currentTournamentId, id, { scoreA, scoreB, statutMatch, evenements });
       alert("Résultat enregistré — classement mis à jour.");
     })
   );
@@ -1059,14 +1301,16 @@ function renderStandings() {
       <div class="card">
         <h2>Groupe ${g}</h2>
         <table>
-          <thead><tr><th>#</th><th>Équipe</th><th>J</th><th>V</th><th>N</th><th>D</th><th>BM</th><th>BE</th><th>Diff</th><th>Pts</th></tr></thead>
+          <thead><tr><th>#</th><th>Équipe</th><th>J</th><th>V</th><th>N</th><th>D</th><th>BM</th><th>BE</th><th>Diff</th><th>🟨/🟥</th><th>Pts</th></tr></thead>
           <tbody>
             ${classement
               .map(
                 (s, i) => `<tr>
                 <td>${i + 1}</td><td>${s.nom}</td><td>${s.joues}</td><td>${s.victoires}</td>
                 <td>${s.nuls}</td><td>${s.defaites}</td><td>${s.butsMarques}</td>
-                <td>${s.butsEncaisses}</td><td>${s.diffButs}</td><td><strong>${s.points}</strong></td>
+                <td>${s.butsEncaisses}</td><td>${s.diffButs}</td>
+                <td class="muted">${s.cartonsJaunes}/${s.cartonsRouges}</td>
+                <td><strong>${s.points}</strong></td>
               </tr>`
               )
               .join("")}
@@ -1201,13 +1445,121 @@ async function persistTerrainDispoMarks() {
   }
 }
 
+// ---------- Championnats (classement cumulé sur plusieurs tournois) ----------
+function renderChampTournoisChecklist() {
+  const container = document.getElementById("champ-tournois-checklist");
+  if (!container) return;
+  container.innerHTML = tournamentsList.length
+    ? tournamentsList
+        .map(
+          (t) => `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+        <input type="checkbox" value="${t.id}" style="width:auto;" /> ${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}
+      </label>`
+        )
+        .join("")
+    : "Aucun tournoi créé pour l'instant.";
+}
+
+// Classement cumulé : concatène les matchs joués de tous les tournois du
+// championnat (poule uniquement, ou poule + phase finale selon le réglage),
+// puis réutilise computeStandings — les ids d'équipe sont globaux (hub),
+// donc ça s'additionne directement sans traduction.
+async function computeStandingsChampionnat(champ) {
+  const tousLesMatchs = [];
+  for (const tId of champ.tournamentIds || []) {
+    const m = await getMatches(tId);
+    const filtres = champ.inclurePhaseFinale ? m : m.filter((mm) => mm.groupe);
+    tousLesMatchs.push(...filtres.filter((mm) => !mm.bye));
+  }
+  const regleClassement = {
+    pointsVictoire: 3,
+    pointsNul: 1,
+    pointsDefaite: 0,
+    criteres: ["points", "diffButs", "butsMarques", "fairplayScore"],
+  };
+  const idsEquipes = new Set(tousLesMatchs.flatMap((m) => [m.equipeAId, m.equipeBId]));
+  const equipesConcernees = equipesGlobal.filter((e) => idsEquipes.has(e.id));
+  return computeStandings(equipesConcernees, tousLesMatchs, regleClassement);
+}
+
+async function afficherClassementChampionnat(champId) {
+  const champ = championnatsList.find((c) => c.id === champId);
+  const zone = document.getElementById(`champ-classement-${champId}`);
+  if (!champ || !zone) return;
+  zone.innerHTML = `<p class="muted">Calcul en cours...</p>`;
+  const classement = await computeStandingsChampionnat(champ);
+  if (!classement.length) {
+    zone.innerHTML = `<p class="muted">Aucun match joué pour l'instant dans les tournois de ce championnat.</p>`;
+    return;
+  }
+  zone.innerHTML = `
+    <table>
+      <thead><tr><th>#</th><th>Équipe</th><th>J</th><th>V</th><th>N</th><th>D</th><th>BM</th><th>BE</th><th>Diff</th><th>🟨/🟥</th><th>Pts</th></tr></thead>
+      <tbody>
+        ${classement
+          .map(
+            (s, i) => `<tr>
+            <td>${i + 1}</td><td>${s.nom}</td><td>${s.joues}</td><td>${s.victoires}</td>
+            <td>${s.nuls}</td><td>${s.defaites}</td><td>${s.butsMarques}</td>
+            <td>${s.butsEncaisses}</td><td>${s.diffButs}</td>
+            <td class="muted">${s.cartonsJaunes}/${s.cartonsRouges}</td>
+            <td><strong>${s.points}</strong></td>
+          </tr>`
+          )
+          .join("")}
+      </tbody>
+    </table>`;
+}
+
+function renderChampionnats() {
+  const container = document.getElementById("championnats-liste");
+  if (!container) return;
+  if (!championnatsList.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = championnatsList
+    .map((c) => {
+      const nomsInclus = (c.tournamentIds || [])
+        .map((id) => tournamentsList.find((t) => t.id === id)?.nom || "(tournoi supprimé)")
+        .join(", ");
+      return `
+      <div class="card">
+        <h2>${c.nom} <button data-supprimer-champ="${c.id}" class="danger" style="float:right;">Supprimer</button></h2>
+        <p class="muted">Tournois inclus : ${nomsInclus || "aucun"} — ${c.inclurePhaseFinale ? "poules + phase finale" : "poules uniquement"}</p>
+        <button data-voir-champ="${c.id}" class="secondaire">Voir le classement</button>
+        <div id="champ-classement-${c.id}" style="margin-top:10px;"></div>
+      </div>`;
+    })
+    .join("");
+
+  container.querySelectorAll("[data-voir-champ]").forEach((btn) =>
+    btn.addEventListener("click", () => afficherClassementChampionnat(btn.dataset.voirChamp))
+  );
+  container.querySelectorAll("[data-supprimer-champ]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (confirm("Supprimer ce championnat ? (les tournois qui le composent ne sont pas touchés)")) {
+        deleteChampionnat(btn.dataset.supprimerChamp);
+      }
+    })
+  );
+}
+
 function renderFinaleMatches() {
   const tbody = document.getElementById("finale-table");
   if (!tbody) return;
-  const finale = matches.filter((m) => m.phase !== "poule");
+  const finale = [...matches.filter((m) => m.phase !== "poule")].sort(
+    (a, b) => (a.tourIndex ?? 0) - (b.tourIndex ?? 0) || (a.slot ?? 0) - (b.slot ?? 0)
+  );
   tbody.innerHTML = finale
-    .map(
-      (m) => `<tr>
+    .map((m) =>
+      m.bye
+        ? `<tr>
+      <td>${m.phase}</td>
+      <td>${teamName(m.equipeAId)} — qualifié(e) d'office (bye)</td>
+      <td>—</td>
+    </tr>`
+        : `<tr>
       <td>${m.phase}</td>
       <td>${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}</td>
       <td>${m.scoreA ?? "-"} : ${m.scoreB ?? "-"}</td>

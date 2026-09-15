@@ -296,7 +296,7 @@ export async function createTournament(data) {
       pointsVictoire: 3,
       pointsNul: 1,
       pointsDefaite: 0,
-      criteres: ["points", "diffButs", "butsMarques"],
+      criteres: ["points", "diffButs", "butsMarques", "fairplayScore"],
     },
     createdAt: serverTimestamp(),
   });
@@ -317,6 +317,36 @@ export async function getTournament(tournamentId) {
 
 export async function updateTournament(tournamentId, patch) {
   await updateDoc(doc(db, "tournaments", tournamentId), patch);
+}
+
+// ---------- CHAMPIONNATS (regroupement de plusieurs tournois) ----------
+// Un championnat cumule les résultats de plusieurs tournois dans un seul
+// classement (façon classement de saison) — entièrement personnalisable :
+// Joas choisit lui-même quels tournois en font partie, et si les matchs de
+// phase finale comptent en plus des matchs de poule ou non.
+export async function createChampionnat(data) {
+  const ref = await addDoc(collection(db, "championnats"), {
+    nom: data.nom,
+    tournamentIds: data.tournamentIds || [],
+    inclurePhaseFinale: data.inclurePhaseFinale !== false,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export function watchChampionnats(callback) {
+  return onSnapshot(
+    query(collection(db, "championnats"), orderBy("createdAt", "desc")),
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+  );
+}
+
+export async function updateChampionnat(championnatId, patch) {
+  await updateDoc(doc(db, "championnats", championnatId), patch);
+}
+
+export async function deleteChampionnat(championnatId) {
+  await deleteDoc(doc(db, "championnats", championnatId));
 }
 
 // ---------- INSCRIPTIONS (équipe ↔ tournoi) ----------
@@ -371,16 +401,19 @@ export async function getInscriptionsForEquipe(equipeId) {
 // ---------- MATCHS ----------
 
 export async function saveMatches(tournamentId, matches) {
-  // matches: liste d'objets { equipeAId, equipeBId, groupe, phase, terrain, date, heure }
+  // matches: liste d'objets { equipeAId, equipeBId, groupe, phase, terrain, date, heure },
+  // avec éventuellement déjà statut/scoreA/scoreB fournis (ex: un match "bye"
+  // généré déjà qualifié d'office) — dans ce cas on respecte ces valeurs
+  // plutôt que d'écraser avec les valeurs par défaut "à jouer".
   const results = [];
   for (const m of matches) {
     const ref = await addDoc(collection(db, "tournaments", tournamentId, "matches"), {
-      ...m,
       statut: "proposé", // proposé | acté
       statutMatch: "à_jouer", // à_jouer | joué | interrompu | forfait | reporté
       scoreA: null,
       scoreB: null,
       evenements: [], // { type: "but"|"carton_jaune"|"carton_rouge", equipe, joueur?, minute?, motif? }
+      ...m,
       createdAt: serverTimestamp(),
     });
     results.push(ref.id);
@@ -393,6 +426,11 @@ export async function clearMatches(tournamentId) {
   for (const d of snap.docs) {
     await deleteDoc(d.ref);
   }
+}
+
+export async function getMatches(tournamentId) {
+  const snap = await getDocs(collection(db, "tournaments", tournamentId, "matches"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
 export function watchMatches(tournamentId, callback) {
