@@ -1,7 +1,7 @@
 import { ADMIN_PASSPHRASE } from "./config.js";
 import {
   createTournament, watchTournaments, getTournament, updateTournament,
-  createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember,
+  createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch,
@@ -240,6 +240,41 @@ function init() {
       console.error(e);
       alert("Erreur lors de l'ajout de l'administrateur : " + (e.message || e));
     }
+  });
+
+  // ---- Détection de noms proches (équipes + joueurs, sur tout le hub) ----
+  document.getElementById("btn-verifier-doublons").addEventListener("click", () => {
+    const entreesEquipes = equipesGlobal.map((e) => ({ nom: e.nom, source: "équipe" }));
+    const clustersEquipes = regrouperNomsProches(entreesEquipes);
+
+    const entreesJoueurs = [];
+    equipesGlobal.forEach((e) => (e.membres || []).forEach((m) => entreesJoueurs.push({ nom: m.nom, source: e.nom })));
+    const clustersJoueurs = regrouperNomsProches(entreesJoueurs);
+
+    const container = document.getElementById("doublons-result");
+    if (!clustersEquipes.length && !clustersJoueurs.length) {
+      container.innerHTML = `<p class="muted">Aucun nom proche détecté parmi les ${equipesGlobal.length} équipe(s) et leurs joueurs.</p>`;
+      return;
+    }
+
+    let html = "";
+    if (clustersEquipes.length) {
+      html += `<p class="champ-label">Équipes aux noms proches</p>` + clustersEquipes
+        .map((c) => `<p class="creneau-row">${c.items.map((i) => `<strong>${i.nom}</strong>`).join(" &nbsp;~&nbsp; ")}</p>`)
+        .join("");
+    }
+    if (clustersJoueurs.length) {
+      html += `<p class="champ-label" style="margin-top:14px;">Joueurs aux noms proches (entre toutes les équipes du hub)</p>` + clustersJoueurs
+        .map(
+          (c) =>
+            `<p class="creneau-row">${c.items
+              .map((i) => `<strong>${i.nom}</strong> <span class="muted">(${i.source})</span>`)
+              .join(" &nbsp;~&nbsp; ")}</p>`
+        )
+        .join("");
+    }
+    html += `<p class="muted" style="margin-top:10px;">Rien n'est fusionné automatiquement — vérifie chaque groupe et retire les doublons à la main via "Voir composition" sur l'équipe concernée.</p>`;
+    container.innerHTML = html;
   });
 
   // ---- Équipes : créer (globale) + inscrire automatiquement à ce tournoi ----
@@ -763,7 +798,7 @@ function renderTeams() {
           <option value="payé" ${t.statutPaiement === "payé" ? "selected" : ""}>Payé</option>
         </select>
       </td>
-      <td>${(t.membres || []).length} joueur(s)</td>
+      <td><button class="secondaire" data-voir-composition="${t.id}">${(t.membres || []).length} joueur(s) — voir</button></td>
       <td><button data-desinscrire="${t.id}" class="danger">Désinscrire</button></td>
     </tr>`
     )
@@ -786,6 +821,70 @@ function renderTeams() {
       }
     })
   );
+  tbody.querySelectorAll("[data-voir-composition]").forEach((btn) =>
+    btn.addEventListener("click", () => toggleComposition(btn.dataset.voirComposition))
+  );
+
+  // Si une équipe était affichée en détail, on rafraîchit son contenu
+  // (utile après un ajout/retrait de membre) plutôt que de la refermer.
+  if (equipeCompositionOuverte) renderComposition(equipeCompositionOuverte);
+}
+
+// ---------- Détail "composition d'équipe" (liste des joueurs) ----------
+// Affiché sous le tableau des équipes inscrites — la seule vue jusqu'ici
+// n'était qu'un nombre, pas de moyen de voir qui est dans l'équipe.
+let equipeCompositionOuverte = null;
+
+function toggleComposition(equipeId) {
+  equipeCompositionOuverte = equipeCompositionOuverte === equipeId ? null : equipeId;
+  renderComposition(equipeCompositionOuverte);
+}
+
+function renderComposition(equipeId) {
+  const container = document.getElementById("equipe-composition-detail");
+  if (!container) return;
+  if (!equipeId) {
+    container.innerHTML = "";
+    return;
+  }
+  const equipe = equipesGlobal.find((e) => e.id === equipeId);
+  if (!equipe) {
+    container.innerHTML = "";
+    return;
+  }
+  const membres = equipe.membres || [];
+  container.innerHTML = `
+    <div class="card">
+      <h2>Composition — ${equipe.nom}</h2>
+      <p class="muted">Code d'invitation joueur : <strong>${equipe.codeEquipe || "-"}</strong> — préférence terrain : ${equipe.preferenceTerrain || "-"}</p>
+      ${
+        membres.length
+          ? `<table>
+        <thead><tr><th>Nom</th><th>Poste</th><th>N°</th><th>Pied fort</th><th>Type</th><th></th></tr></thead>
+        <tbody>
+          ${membres
+            .map(
+              (m, i) => `<tr>
+            <td>${m.nom}</td><td>${m.poste || "-"}</td><td>${m.numero || "-"}</td><td>${m.piedFort || "-"}</td>
+            <td><span class="badge ${m.type === "compte" ? "acte" : "propose"}">${m.type === "compte" ? "Compte" : "Libre"}</span></td>
+            <td><button data-retirer-membre="${i}" class="danger">Retirer</button></td>
+          </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>`
+          : `<p class="muted">Aucun joueur enregistré pour cette équipe pour l'instant.</p>`
+      }
+      <button class="secondaire" id="btn-fermer-composition" style="margin-top:10px;">Fermer</button>
+    </div>`;
+
+  container.querySelectorAll("[data-retirer-membre]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Retirer ce joueur de l'équipe ?")) return;
+      await removeEquipeMember(equipeId, Number(btn.dataset.retirerMembre));
+    })
+  );
+  document.getElementById("btn-fermer-composition").addEventListener("click", () => toggleComposition(equipeId));
 }
 
 // Liste des équipes globales PAS ENCORE inscrites à ce tournoi, avec un
@@ -802,7 +901,8 @@ function renderEquipesDisponibles() {
         .map(
           (e) => `
     <div class="creneau-row">
-      <span>${e.nom}</span>
+      <span>${e.nom} — ${(e.membres || []).length} joueur(s)</span>
+      <button data-voir-composition="${e.id}" class="secondaire">Voir composition</button>
       <button data-inscrire="${e.id}" class="secondaire">+ Inscrire à ce tournoi</button>
       <button data-supprimer-equipe="${e.id}" class="danger">Supprimer définitivement</button>
     </div>`
@@ -828,6 +928,10 @@ function renderEquipesDisponibles() {
       }
     })
   );
+  container.querySelectorAll("[data-voir-composition]").forEach((btn) =>
+    btn.addEventListener("click", () => toggleComposition(btn.dataset.voirComposition))
+  );
+  if (equipeCompositionOuverte) renderComposition(equipeCompositionOuverte);
 }
 
 function teamName(id) {
@@ -1179,7 +1283,60 @@ function renderAdmins(admins) {
 //   matchs.csv  : groupe,equipeA,equipeB,date,heureDebut,heureFin,terrain(optionnel)
 
 function normaliseNom(nom) {
-  return (nom || "").trim().toLowerCase().replace(/\s+/g, " ");
+  return (nom || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "") // enlève les accents (é, à...)
+    .trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// ---------- Détection de noms proches (équipes ou joueurs) ----------
+// Sert à repérer par exemple "ANAS", "Anas K" et "Anas Kada" comme probable
+// même personne écrite différemment selon les fichiers importés — pas de
+// fusion automatique, juste un signalement pour corriger à la main.
+
+function distanceLevenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      d[i][j] = a[i - 1] === b[j - 1]
+        ? d[i - 1][j - 1]
+        : 1 + Math.min(d[i - 1][j], d[i][j - 1], d[i - 1][j - 1]);
+    }
+  }
+  return d[m][n];
+}
+
+// Deux noms sont "proches" si l'un est le préfixe de l'autre (ex: "anas"
+// dans "anas kada") ou si peu de caractères les séparent (fautes de frappe).
+function nomsProches(a, b) {
+  const na = normaliseNom(a);
+  const nb = normaliseNom(b);
+  if (!na || !nb || na === nb) return na === nb && na !== "";
+  if (na.length >= 3 && nb.length >= 3 && (na.startsWith(nb) || nb.startsWith(na))) return true;
+  const seuil = Math.min(na.length, nb.length) <= 4 ? 1 : 2;
+  return distanceLevenshtein(na, nb) <= seuil;
+}
+
+// Regroupe une liste d'{ nom, source } en clusters de noms mutuellement
+// proches (union-find simplifié : chaque nouvel élément rejoint le premier
+// cluster existant avec lequel il matche, sinon en crée un nouveau).
+function regrouperNomsProches(entrees) {
+  const clusters = []; // [{ noms: Set(normalisé), items: [{nom, source}] }]
+  for (const entree of entrees) {
+    if (!entree.nom || !entree.nom.trim()) continue;
+    const cluster = clusters.find((c) => [...c.noms].some((n) => nomsProches(n, entree.nom)));
+    if (cluster) {
+      cluster.noms.add(normaliseNom(entree.nom));
+      cluster.items.push(entree);
+    } else {
+      clusters.push({ noms: new Set([normaliseNom(entree.nom)]), items: [entree] });
+    }
+  }
+  // Ne garde que les clusters où au moins deux ORTHOGRAPHES différentes
+  // apparaissent (sinon c'est juste la même équipe/le même joueur répété
+  // normalement, pas un doublon à corriger).
+  return clusters.filter((c) => c.noms.size > 1);
 }
 
 // Lit un champ d'une ligne CSV en tolérant les variations de casse/accents

@@ -65,6 +65,12 @@
 
   <section id="tab-equipes" class="tab-content">
     <div class="card">
+      <h2>Vérifier les doublons (noms proches)</h2>
+      <p class="aide">Compare tous les noms d'équipes et de joueurs du hub (toutes équipes confondues, pas juste celles inscrites à ce tournoi) pour repérer une même personne/équipe écrite différemment — ex : "Anas", "Anas K", "Anas Kada". Rien n'est fusionné automatiquement, c'est à toi de corriger ensuite (bouton "Retirer" dans la composition d'une équipe).</p>
+      <button id="btn-verifier-doublons" class="secondaire">🔍 Vérifier les doublons</button>
+      <div id="doublons-result" style="margin-top:10px;"></div>
+    </div>
+    <div class="card">
       <h2>Ajouter une équipe</h2>
       <div class="grille-form">
         <input id="eq-nom" placeholder="Nom de l'équipe" />
@@ -83,6 +89,7 @@
         <tbody id="teams-table"></tbody>
       </table>
     </div>
+    <div id="equipe-composition-detail"></div>
     <div class="card">
       <h2>Autres équipes du hub</h2>
       <p class="muted">Équipes existantes non encore inscrites à ce tournoi — inscris-les ici, ou crée une nouvelle équipe ci-dessus.</p>
