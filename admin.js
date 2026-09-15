@@ -1,7 +1,7 @@
 import { ADMIN_PASSPHRASE } from "./config.js";
 import {
   createTournament, watchTournaments, getTournament, updateTournament,
-  createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability,
+  createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch,
@@ -441,6 +441,126 @@ function init() {
 
   document.getElementById("btn-clear-schedule").addEventListener("click", async () => {
     if (confirm("Effacer tous les matchs générés ?")) await clearMatches(currentTournamentId);
+  });
+
+  // ---------- Import d'un tournoi déjà joué (équipes/membres/matchs en CSV) ----------
+  let importEnCours = false;
+  document.getElementById("btn-import-tournoi").addEventListener("click", async () => {
+    if (importEnCours) return;
+    if (!currentTournamentId) return alert("Sélectionne ou crée d'abord un tournoi.");
+
+    const fileEquipes = document.getElementById("imp-file-equipes").files[0];
+    const fileMembres = document.getElementById("imp-file-membres").files[0];
+    const fileMatchs = document.getElementById("imp-file-matchs").files[0];
+    if (!fileEquipes && !fileMembres && !fileMatchs) {
+      return alert("Choisis au moins un fichier CSV à importer (équipes, membres et/ou matchs).");
+    }
+
+    const btn = document.getElementById("btn-import-tournoi");
+    const resultEl = document.getElementById("import-result");
+    importEnCours = true;
+    btn.disabled = true;
+    btn.textContent = "Import en cours...";
+    resultEl.textContent = "";
+
+    try {
+      const [rowsEquipes, rowsMembres, rowsMatchs] = await Promise.all([
+        fileEquipes ? readCsvFile(fileEquipes) : Promise.resolve([]),
+        fileMembres ? readCsvFile(fileMembres) : Promise.resolve([]),
+        fileMatchs ? readCsvFile(fileMatchs) : Promise.resolve([]),
+      ]);
+
+      // 1. Équipes : réutilise une équipe existante du hub si le nom
+      // correspond déjà (insensible à la casse), sinon la crée avec un mot
+      // de passe capitaine temporaire à communiquer manuellement — puis
+      // l'inscrit à ce tournoi avec son groupe.
+      const nomVersId = new Map(equipesGlobal.map((e) => [normaliseNom(e.nom), e.id]));
+      const nouveauxMotsDePasse = [];
+      for (const row of rowsEquipes) {
+        const nom = (row.nom || "").trim();
+        if (!nom) continue;
+        const cle = normaliseNom(nom);
+        let equipeId = nomVersId.get(cle);
+        if (!equipeId) {
+          const motDePasse = genererMotDePasseTemp();
+          equipeId = await createEquipe({ nom, capitainePassword: motDePasse });
+          nomVersId.set(cle, equipeId);
+          nouveauxMotsDePasse.push(`${nom} → ${motDePasse}`);
+        }
+        const dejaInscrite = teams.some((t) => t.id === equipeId);
+        if (!dejaInscrite) await inscrireEquipe(currentTournamentId, equipeId);
+        if (row.groupe && row.groupe.trim()) {
+          await updateInscription(currentTournamentId, equipeId, { groupe: row.groupe.trim() });
+        }
+      }
+
+      // 2. Membres : ajoutés en "libre" (sans compte), en évitant les
+      // doublons si le même import est relancé deux fois.
+      let nbMembresAjoutes = 0;
+      const equipesFraiches = rowsMembres.length ? await Promise.all(
+        [...new Set(rowsMembres.map((r) => normaliseNom(r.equipe || "")))]
+          .filter((cle) => nomVersId.has(cle))
+          .map((cle) => nomVersId.get(cle))
+      ) : [];
+      for (const row of rowsMembres) {
+        const cleEquipe = normaliseNom(row.equipe || "");
+        const nomMembre = (row.nom || "").trim();
+        if (!nomMembre || !nomVersId.has(cleEquipe)) continue;
+        const equipeId = nomVersId.get(cleEquipe);
+        const equipeFraiche = equipesGlobal.find((e) => e.id === equipeId);
+        const dejaMembre = (equipeFraiche?.membres || []).some(
+          (m) => normaliseNom(m.nom) === normaliseNom(nomMembre)
+        );
+        if (dejaMembre) continue;
+        await addEquipeMember(equipeId, { type: "libre", nom: nomMembre });
+        nbMembresAjoutes++;
+      }
+
+      // 3. Matchs : créés directement avec les horaires du fichier (pas de
+      // recalcul via le générateur auto). Le terrain vient de la colonne
+      // "terrain" du CSV si présente, sinon du champ texte de secours.
+      const terrainParDefaut = document.getElementById("imp-terrain-defaut").value.trim();
+      const nomsIntrouvables = new Set();
+      const matchsAImporter = [];
+      for (const row of rowsMatchs) {
+        const idA = nomVersId.get(normaliseNom(row.equipeA || ""));
+        const idB = nomVersId.get(normaliseNom(row.equipeB || ""));
+        if (!idA) nomsIntrouvables.add(row.equipeA);
+        if (!idB) nomsIntrouvables.add(row.equipeB);
+        if (!idA || !idB) continue;
+        matchsAImporter.push({
+          equipeAId: idA,
+          equipeBId: idB,
+          groupe: (row.groupe || "").trim() || null,
+          phase: "poule",
+          terrain: (row.terrain || "").trim() || terrainParDefaut || "À préciser",
+          date: (row.date || "").trim() || null,
+          heure: (row.heureDebut || row.heure || "").trim() || null,
+        });
+      }
+      if (matchsAImporter.length) await saveMatches(currentTournamentId, matchsAImporter);
+
+      const lignes = [
+        `${rowsEquipes.length} équipe(s) traitée(s) dans le fichier équipes.`,
+        `${nbMembresAjoutes} membre(s) ajouté(s).`,
+        `${matchsAImporter.length} match(s) importé(s)${rowsMatchs.length > matchsAImporter.length ? ` (${rowsMatchs.length - matchsAImporter.length} ignoré(s), équipe introuvable)` : ""}.`,
+      ];
+      if (nouveauxMotsDePasse.length) {
+        lignes.push(`Nouvelles équipes créées avec mot de passe temporaire à communiquer au capitaine :`);
+        lignes.push(...nouveauxMotsDePasse);
+      }
+      if (nomsIntrouvables.size) {
+        lignes.push(`⚠️ Noms d'équipe introuvables dans le fichier matchs (vérifie l'orthographe vs le fichier équipes) : ${[...nomsIntrouvables].join(", ")}`);
+      }
+      resultEl.innerHTML = lignes.map((l) => `<div>${l}</div>`).join("");
+    } catch (e) {
+      console.error(e);
+      resultEl.textContent = "Erreur pendant l'import : " + (e.message || e);
+    } finally {
+      importEnCours = false;
+      btn.disabled = false;
+      btn.textContent = "Importer dans le tournoi sélectionné";
+    }
   });
 
   document.getElementById("btn-generate-finale").addEventListener("click", async () => {
@@ -1014,4 +1134,74 @@ function renderAdmins(admins) {
       if (confirm("Retirer cet administrateur ?")) deleteAdmin(btn.dataset.delAdmin);
     })
   );
+}
+
+// ===================== IMPORT CSV (tournoi déjà joué) =====================
+// Format attendu, 3 fichiers séparés (voir README pour un exemple) :
+//   equipes.csv : nom,groupe
+//   membres.csv : equipe,nom
+//   matchs.csv  : groupe,equipeA,equipeB,date,heureDebut,heureFin,terrain(optionnel)
+
+function normaliseNom(nom) {
+  return (nom || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function genererMotDePasseTemp() {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"; // sans 0/o/1/i/l pour éviter la confusion
+  let mdp = "";
+  for (let i = 0; i < 8; i++) mdp += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return mdp;
+}
+
+// Parseur CSV minimal : gère les guillemets (champs contenant une virgule),
+// suffisant pour des exports Excel/Google Sheets standards — pas besoin
+// d'une librairie externe pour un usage aussi simple.
+function parseCsv(text) {
+  const lignes = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").filter((l) => l.trim() !== "");
+  if (!lignes.length) return [];
+
+  function parseLigne(ligne) {
+    const champs = [];
+    let champActuel = "";
+    let dansGuillemets = false;
+    for (let i = 0; i < ligne.length; i++) {
+      const c = ligne[i];
+      if (dansGuillemets) {
+        if (c === '"' && ligne[i + 1] === '"') {
+          champActuel += '"';
+          i++;
+        } else if (c === '"') {
+          dansGuillemets = false;
+        } else {
+          champActuel += c;
+        }
+      } else if (c === '"') {
+        dansGuillemets = true;
+      } else if (c === ",") {
+        champs.push(champActuel);
+        champActuel = "";
+      } else {
+        champActuel += c;
+      }
+    }
+    champs.push(champActuel);
+    return champs.map((c) => c.trim());
+  }
+
+  const entetes = parseLigne(lignes[0]).map((e) => e.toLowerCase());
+  return lignes.slice(1).map((ligne) => {
+    const valeurs = parseLigne(ligne);
+    const obj = {};
+    entetes.forEach((entete, i) => (obj[entete] = valeurs[i] ?? ""));
+    return obj;
+  });
+}
+
+function readCsvFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(parseCsv(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file, "UTF-8");
+  });
 }

@@ -105,6 +105,20 @@
 
   <section id="tab-calendrier" class="tab-content" hidden>
     <div class="card">
+      <h2>Importer un tournoi déjà joué</h2>
+      <p class="aide">Pour reprendre un tournoi préparé ailleurs (Excel/Word/PDF converti en CSV) plutôt que de tout ressaisir : 3 fichiers CSV séparés — <code>equipes.csv</code> (colonnes : nom, groupe), <code>membres.csv</code> (colonnes : equipe, nom) et <code>matchs.csv</code> (colonnes : groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain — terrain optionnel). Les équipes déjà existantes dans le hub (même nom) sont réutilisées ; les nouvelles sont créées avec un mot de passe capitaine temporaire à leur communiquer. Les matchs sont importés tels quels (pas de recalcul), en plus des matchs déjà présents.</p>
+      <label class="champ-label">Fichier équipes (nom, groupe)</label>
+      <input type="file" id="imp-file-equipes" accept=".csv" />
+      <label class="champ-label">Fichier membres (equipe, nom)</label>
+      <input type="file" id="imp-file-membres" accept=".csv" />
+      <label class="champ-label">Fichier matchs (groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain)</label>
+      <input type="file" id="imp-file-matchs" accept=".csv" />
+      <label class="champ-label">Terrain par défaut (si absent du fichier matchs)</label>
+      <input id="imp-terrain-defaut" placeholder="ex : St Stanislas" style="width:100%;margin-bottom:14px;" />
+      <button id="btn-import-tournoi">Importer dans le tournoi sélectionné</button>
+      <div class="muted" id="import-result" style="margin-top:10px;"></div>
+    </div>
+    <div class="card">
       <h2>Génération automatique du calendrier</h2>
       <p class="muted">Calcule le nombre de groupes selon le nombre d'équipes actuel, génère toutes les confrontations de poule et les place dans les créneaux de disponibilité des terrains déclarés dans l'onglet Terrains.</p>
       <button id="btn-generate-schedule">Générer le calendrier</button>
