@@ -115,6 +115,71 @@ th { background: var(--rouge-clair); color: var(--rouge); }
 .badge.acte { background: #10331c; color: var(--vert); }
 .badge.forfait { background: var(--rouge-clair); color: var(--rouge); }
 
+/* --- Aperçu visuel : poules en cartes + bracket phase finale --- */
+.apercu-poules-wrap { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 8px; }
+.apercu-groupe-bloc { min-width: 240px; }
+.apercu-groupe-label {
+  font-size: 0.8rem; font-weight: 700; color: var(--gris);
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;
+}
+.apercu-equipes-col { display: flex; flex-direction: column; gap: 10px; }
+.apercu-equipe-carte {
+  background: var(--fond-input);
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.apercu-equipe-entete {
+  background: #000;
+  color: #fff;
+  padding: 8px 10px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+.apercu-badge-statut {
+  font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap;
+}
+.apercu-badge-confirmée { background: #10331c; color: var(--vert); }
+.apercu-badge-en_attente { background: #3a2f10; color: #e0b83a; }
+.apercu-badge-forfait, .apercu-badge-désistée { background: var(--rouge-clair); color: var(--rouge); }
+.apercu-membres { padding: 4px 0; }
+.apercu-membres p { margin: 0; padding: 5px 10px; font-size: 0.8rem; color: var(--texte); }
+.apercu-membres p:nth-child(even) { background: rgba(255,255,255,0.03); }
+.apercu-membres p.muted { color: var(--gris); font-style: italic; }
+
+.apercu-bracket-wrap { display: flex; gap: 32px; overflow-x: auto; padding: 14px 4px 6px; margin-top: 18px; }
+.apercu-tour-col { display: flex; flex-direction: column; justify-content: space-around; min-width: 180px; gap: 20px; }
+.apercu-tour-titre {
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--gris); margin-bottom: 8px; text-align: center;
+}
+.apercu-match-carte {
+  background: var(--fond-input);
+  border: 1px solid var(--bordure);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.apercu-match-carte .apercu-ligne {
+  display: flex; justify-content: space-between; padding: 6px 9px;
+  font-size: 0.8rem; border-bottom: 1px solid var(--bordure);
+}
+.apercu-match-carte .apercu-ligne:last-child { border-bottom: none; }
+.apercu-match-carte .apercu-ligne.apercu-gagnant { font-weight: 700; background: #10331c; color: var(--vert); }
+.apercu-match-carte .apercu-score { color: var(--gris); font-variant-numeric: tabular-nums; }
+.apercu-champion-carte {
+  align-self: center;
+  background: var(--rouge);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-weight: 700;
+  text-align: center;
+  font-size: 0.85rem;
+}
+.apercu-champion-carte span { display: block; font-size: 1.1rem; margin-top: 4px; }
+
 .grille-form {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

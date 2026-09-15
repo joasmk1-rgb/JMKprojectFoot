@@ -985,6 +985,7 @@ function selectTournament(id) {
     matches = list;
     renderMatches();
     renderFinaleMatches();
+    renderApercuBracket();
   });
 }
 
@@ -1044,6 +1045,124 @@ function renderTournoiSettings() {
     ${nbTerrains} terrain(s) alloué(s) à ce tournoi — à gérer dans l'onglet Terrains.<br/>
     Inscriptions publiques : ${t.inscriptionsOuvertes !== false ? "ouvertes" : "fermées"} (case à cocher en haut de page).
   `;
+  renderApercuVisuel();
+}
+
+// ---------- Aperçu visuel : poules en cartes + bracket phase finale ----------
+function renderApercuVisuel() {
+  renderApercuPoules();
+  renderApercuBracket();
+}
+
+function renderApercuPoules() {
+  const zone = document.getElementById("apercu-poules");
+  if (!zone) return;
+  if (!teams.length) {
+    zone.innerHTML = `<p class="muted">Inscris des équipes à ce tournoi pour les voir apparaître ici.</p>`;
+    return;
+  }
+  const groupes = new Map(); // nom de groupe (ou "Sans groupe") -> [équipes]
+  teams.forEach((t) => {
+    const cle = t.groupe || "Sans groupe";
+    if (!groupes.has(cle)) groupes.set(cle, []);
+    groupes.get(cle).push(t);
+  });
+  const groupesTries = [...groupes.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+  zone.innerHTML = `<div class="apercu-poules-wrap">${groupesTries
+    .map(
+      ([nomGroupe, equipesDuGroupe]) => `
+    <div class="apercu-groupe-bloc">
+      <div class="apercu-groupe-label">Groupe ${nomGroupe}</div>
+      <div class="apercu-equipes-col">
+        ${equipesDuGroupe
+          .map((e) => {
+            const membres = e.membres || [];
+            return `
+          <div class="apercu-equipe-carte">
+            <div class="apercu-equipe-entete">
+              <span>${e.nom}</span>
+              <span class="apercu-badge-statut apercu-badge-${e.statut || "en_attente"}">${e.statut || "en attente"}</span>
+            </div>
+            <div class="apercu-membres">
+              ${
+                membres.length
+                  ? membres.map((m) => `<p>${m.nom}</p>`).join("")
+                  : `<p class="muted">Aucun membre encodé</p>`
+              }
+            </div>
+          </div>`;
+          })
+          .join("")}
+      </div>
+    </div>`
+    )
+    .join("")}</div>`;
+}
+
+function renderApercuBracket() {
+  const zone = document.getElementById("apercu-bracket");
+  if (!zone) return;
+  const matchsFinale = matches.filter((m) => m.phase !== "poule");
+  if (!matchsFinale.length) {
+    zone.innerHTML = "";
+    return;
+  }
+  const parTour = new Map(); // tourIndex -> [matchs]
+  matchsFinale.forEach((m) => {
+    const idx = m.tourIndex ?? 0;
+    if (!parTour.has(idx)) parTour.set(idx, []);
+    parTour.get(idx).push(m);
+  });
+  const toursTries = [...parTour.entries()].sort((a, b) => a[0] - b[0]);
+
+  const dernierTour = toursTries[toursTries.length - 1][1];
+  const derniereEstFinale = dernierTour.every((m) => m.phase === "finale");
+  let championHtml = "";
+  if (derniereEstFinale) {
+    const finale = dernierTour[0];
+    const joue = finale.bye || (finale.scoreA !== null && finale.scoreA !== undefined);
+    if (joue) {
+      const gagnantId = finale.bye
+        ? finale.equipeAId
+        : finale.scoreA > finale.scoreB
+        ? finale.equipeAId
+        : finale.equipeBId;
+      championHtml = `<div class="apercu-tour-col"><div class="apercu-tour-titre">&nbsp;</div><div class="apercu-champion-carte">🏆 Champion<span>${teamName(
+        gagnantId
+      )}</span></div></div>`;
+    }
+  }
+
+  zone.innerHTML = `<div class="apercu-bracket-wrap">${toursTries
+    .map(
+      ([, matchsDuTour]) => `
+    <div class="apercu-tour-col">
+      <div class="apercu-tour-titre">${matchsDuTour[0].phase}</div>
+      ${matchsDuTour
+        .sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0))
+        .map((m) => {
+          if (m.bye) {
+            return `<div class="apercu-match-carte"><div class="apercu-ligne apercu-gagnant"><span>${teamName(
+              m.equipeAId
+            )}</span><span class="apercu-score">bye</span></div></div>`;
+          }
+          const joue = m.scoreA !== null && m.scoreA !== undefined;
+          const aGagne = joue && m.scoreA > m.scoreB;
+          const bGagne = joue && m.scoreB > m.scoreA;
+          return `<div class="apercu-match-carte">
+            <div class="apercu-ligne ${aGagne ? "apercu-gagnant" : ""}"><span>${teamName(
+            m.equipeAId
+          )}</span><span class="apercu-score">${m.scoreA ?? "-"}</span></div>
+            <div class="apercu-ligne ${bGagne ? "apercu-gagnant" : ""}"><span>${teamName(
+            m.equipeBId
+          )}</span><span class="apercu-score">${m.scoreB ?? "-"}</span></div>
+          </div>`;
+        })
+        .join("")}
+    </div>`
+    )
+    .join("")}${championHtml}</div>`;
 }
 
 function renderTeams() {
