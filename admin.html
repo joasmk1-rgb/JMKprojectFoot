@@ -11,6 +11,11 @@
   <h1>⚙️ Administration tournoi</h1>
   <div id="auth-status"></div>
 </header>
+<nav class="nav-pages">
+  <a href="index.html">🏆 Page publique</a>
+  <a href="joueur.html">⚽ Mon compte joueur</a>
+  <a href="admin.html" class="nav-active">⚙️ Administration</a>
+</nav>
 
 <main id="app" hidden>
   <div class="card" id="tournament-picker">
@@ -392,7 +397,9 @@
       <h2>Comptes joueurs du hub</h2>
       <p class="muted">Ce sont les comptes créés par les joueurs eux-mêmes (page "Mon compte joueur" / inscription publique), indépendants des équipes — un compte peut être lié à plusieurs équipes.</p>
       <input id="joueurs-recherche" placeholder="Rechercher un joueur par nom..." style="width:100%;margin-bottom:10px;" />
+      <p class="aide">Pour fusionner deux fiches de la même personne (ex. "Anas" et "Anas K") : coche-les toutes les deux (et plus si besoin) ci-dessous, puis clique sur "Fusionner la sélection". Le compte déjà revendiqué (s'il y en a un) est gardé comme survivant, les autres noms deviennent des alias, et tout leur historique est transféré dessus.</p>
       <div class="toolbar">
+        <button id="btn-fusionner-joueurs-selection" class="secondaire">🔗 Fusionner la sélection</button>
         <button id="btn-delete-joueurs-selection" class="danger">Supprimer la sélection</button>
       </div>
       <table>

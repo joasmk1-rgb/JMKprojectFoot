@@ -1007,6 +1007,31 @@ function init() {
     onDelete: (ids) => Promise.all(ids.map((id) => supprimerJoueur(id))),
   });
 
+  // ---- Fusion manuelle depuis le listing complet des joueurs (coche 2+ fiches) ----
+  document.getElementById("btn-fusionner-joueurs-selection").addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll(".check-joueur:checked")].map((c) => c.value);
+    if (ids.length < 2) return alert("Coche au moins 2 fiches joueur à fusionner ensemble.");
+    const noms = ids.map((id) => joueursGlobal.find((j) => j.id === id)?.nom || "?").join(", ");
+    if (!confirm(`Fusionner ces ${ids.length} fiches en une seule (${noms}) ? Cette action est irréversible.`)) return;
+    const btn = document.getElementById("btn-fusionner-joueurs-selection");
+    btn.disabled = true;
+    btn.textContent = "Fusion...";
+    try {
+      // Fusionne tout dans la 1ère, une paire à la fois (fusionnerJoueurs
+      // choisit lui-même le survivant réel si l'un des deux est revendiqué).
+      let survivantId = ids[0];
+      for (let i = 1; i < ids.length; i++) {
+        survivantId = await fusionnerJoueurs(survivantId, ids[i]);
+      }
+      alert("Fusion terminée.");
+    } catch (e) {
+      alert("Erreur lors de la fusion : " + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "🔗 Fusionner la sélection";
+    }
+  });
+
   document.getElementById("joueurs-recherche").addEventListener("input", () => renderJoueurs());
 
   document.getElementById("btn-reset-donnees").addEventListener("click", async () => {
