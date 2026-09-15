@@ -19,6 +19,11 @@
       <select id="select-tournament"></select>
       <button id="btn-new-tournament" class="secondaire">+ Nouveau tournoi</button>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <input id="nt-inscriptions-ouvertes" type="checkbox" style="width:auto;" />
+      Inscriptions publiques ouvertes pour ce tournoi
+    </label>
+    <p class="muted">Lien public à partager (inscription + calendrier de ce tournoi) : <a id="lien-public-tournoi" href="index.html" target="_blank" style="color:var(--rouge);"></a></p>
   </div>
 
   <div id="new-tournament-form" class="card" hidden>
@@ -26,6 +31,12 @@
 
     <label class="champ-label">Nom du tournoi</label>
     <input id="nt-nom" placeholder="ex : Tournoi Partenariat Sud 2026" style="width:100%;margin-bottom:14px;" />
+
+    <label class="champ-label">Date(s) du tournoi (optionnel, affiché sur la page publique)</label>
+    <div class="grille-form">
+      <input id="nt-datedebut" type="date" />
+      <input id="nt-datefin" type="date" placeholder="fin (si plusieurs jours)" />
+    </div>
 
     <label class="champ-label">Taille de groupe visée</label>
     <p class="aide">Le nombre de groupes n'est PAS fixé ici : il se recalcule automatiquement à chaque ajout/retrait d'équipe, pour rester le plus proche possible de cette taille. Tu peux ne pas connaître le nombre final d'équipes à l'avance.</p>
@@ -113,13 +124,9 @@
   <section id="tab-calendrier" class="tab-content" hidden>
     <div class="card">
       <h2>Importer un tournoi déjà joué</h2>
-      <p class="aide">Pour reprendre un tournoi préparé ailleurs (Excel/Word/PDF converti en CSV) plutôt que de tout ressaisir : 3 fichiers CSV séparés — <code>equipes.csv</code> (colonnes : nom, groupe), <code>membres.csv</code> (colonnes : equipe, nom) et <code>matchs.csv</code> (colonnes : groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain — terrain optionnel). Les équipes déjà existantes dans le hub (même nom) sont réutilisées ; les nouvelles sont créées avec un mot de passe capitaine temporaire à leur communiquer. Les matchs sont importés tels quels (pas de recalcul), en plus des matchs déjà présents.</p>
-      <label class="champ-label">Fichier équipes (nom, groupe)</label>
-      <input type="file" id="imp-file-equipes" accept=".csv" />
-      <label class="champ-label">Fichier membres (equipe, nom)</label>
-      <input type="file" id="imp-file-membres" accept=".csv" />
-      <label class="champ-label">Fichier matchs (groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain)</label>
-      <input type="file" id="imp-file-matchs" accept=".csv" />
+      <p class="aide">Pour reprendre un tournoi préparé ailleurs (Excel/Word/PDF converti en CSV) plutôt que de tout ressaisir : dépose un ou plusieurs fichiers CSV d'un coup, peu importe l'ordre — le type de chaque fichier est détecté automatiquement à partir de ses colonnes. Équipes : colonnes <code>nom, groupe</code>. Membres : colonnes <code>equipe, nom</code>. Matchs : colonnes <code>groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain</code> (terrain optionnel). Un fichier dont les colonnes ne correspondent à rien de connu est simplement ignoré (signalé dans le résultat). Les équipes déjà existantes dans le hub (même nom) sont réutilisées ; les nouvelles sont créées avec un mot de passe capitaine temporaire à leur communiquer. Les matchs en double (mêmes équipes + même date/heure) sont détectés et te sont signalés avant import.</p>
+      <label class="champ-label">Fichier(s) CSV à importer</label>
+      <input type="file" id="imp-files" accept=".csv" multiple />
       <label class="champ-label">Terrain par défaut (si absent du fichier matchs)</label>
       <input id="imp-terrain-defaut" placeholder="ex : St Stanislas" style="width:100%;margin-bottom:14px;" />
       <button id="btn-import-tournoi">Importer dans le tournoi sélectionné</button>

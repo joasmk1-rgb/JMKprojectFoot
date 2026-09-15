@@ -20,13 +20,16 @@
 
 <main>
   <div class="card">
-    <h2>Tournoi</h2>
-    <select id="select-tournament"></select>
+    <h2>Tournois</h2>
+    <p class="muted">Choisis un tournoi ci-dessous (ou via le lien qu'on t'a partagé).</p>
+    <div id="liste-tournois" class="tournois-grid"></div>
+    <select id="select-tournament" style="margin-top:10px;"></select>
   </div>
 
   <nav class="tabs">
     <button data-tab="calendrier" class="active">Calendrier</button>
     <button data-tab="classement">Classement</button>
+    <button data-tab="inscription">S'inscrire</button>
     <button data-tab="mon-equipe" id="tab-btn-mon-equipe" hidden>Mon équipe</button>
   </nav>
 
@@ -43,7 +46,67 @@
     <div id="public-classements"></div>
   </section>
 
+  <section id="tab-inscription" class="tab-content" hidden>
+    <p id="insc-statut-fermees" class="sondage-banner" hidden>⚠️ Les inscriptions publiques sont actuellement fermées pour ce tournoi par l'organisateur — contacte-le directement si besoin.</p>
+
+    <div id="insc-connexion-joueur" class="card">
+      <h2>Connecte-toi pour t'inscrire</h2>
+      <p class="aide">Ton compte joueur te sert pour tous les tournois du hub — pas besoin d'en recréer un à chaque fois.</p>
+      <label class="champ-label">Déjà un compte ?</label>
+      <div class="grille-form">
+        <input id="insc-j-password" type="password" placeholder="Ton mot de passe" />
+        <button id="insc-j-btn-login">Se connecter</button>
+      </div>
+      <label class="champ-label" style="margin-top:14px;">Première visite ?</label>
+      <div class="grille-form">
+        <input id="insc-j-signup-nom" placeholder="Ton nom" />
+        <input id="insc-j-signup-password" type="password" placeholder="Choisis un mot de passe" />
+      </div>
+      <button id="insc-j-btn-signup" class="secondaire" style="margin-top:8px;">Créer mon compte</button>
+      <p class="muted" id="insc-j-error" style="color:var(--rouge);"></p>
+    </div>
+
+    <div id="insc-connecte" hidden>
+      <div class="card">
+        <h2>Connecté : <span id="insc-j-nom-affiche"></span> <button id="insc-j-btn-logout" class="secondaire" style="float:right;">Déconnexion</button></h2>
+        <div id="insc-mes-equipes"></div>
+      </div>
+
+      <div class="card">
+        <h2>Créer une nouvelle équipe et l'inscrire</h2>
+        <div class="grille-form">
+          <input id="insc-nouvelle-eq-nom" placeholder="Nom de l'équipe" />
+          <input id="insc-nouvelle-eq-password" placeholder="Mot de passe équipe (optionnel, généré sinon)" />
+        </div>
+        <input id="insc-nouvelle-eq-contact" placeholder="Contact capitaine (tel/email — pour te joindre)" style="width:100%;margin-top:10px;" />
+        <button id="insc-btn-creer-equipe" style="margin-top:10px;">Créer et inscrire mon équipe</button>
+      </div>
+
+      <div class="card">
+        <h2>J'ai déjà une équipe</h2>
+        <div class="grille-form">
+          <input id="insc-eq-password" type="password" placeholder="Mot de passe de l'équipe" />
+          <button id="insc-btn-connecter-equipe">Inscrire mon équipe à ce tournoi</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Rejoindre une équipe déjà inscrite</h2>
+        <p class="aide">Ta demande sera visible par les membres de l'équipe, qui devront l'accepter.</p>
+        <div id="insc-liste-equipes-rejoindre"></div>
+      </div>
+
+      <p class="muted" id="insc-result"></p>
+    </div>
+  </section>
+
   <section id="tab-mon-equipe" class="tab-content" hidden>
+    <div class="card">
+      <button id="btn-inscrire-mon-equipe-ici" hidden>Inscrire mon équipe à ce tournoi</button>
+      <h2>Demandes d'adhésion en attente</h2>
+      <p class="muted">N'importe quel membre lié peut accepter ou refuser — pas seulement le contact capitaine.</p>
+      <div id="demandes-adhesion-list"></div>
+    </div>
     <div class="card">
       <h2>Mes prochains matchs</h2>
       <table>

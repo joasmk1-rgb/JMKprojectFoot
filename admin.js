@@ -126,7 +126,9 @@ function init() {
 
   watchTournaments((list) => {
     const select = document.getElementById("select-tournament");
-    select.innerHTML = list.map((t) => `<option value="${t.id}">${t.nom}</option>`).join("");
+    select.innerHTML = list
+      .map((t) => `<option value="${t.id}">${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}</option>`)
+      .join("");
     if (list.length && !currentTournamentId) {
       selectTournament(list[0].id);
     }
@@ -140,6 +142,12 @@ function init() {
     document.getElementById("new-tournament-form").hidden = false;
   });
 
+  document.getElementById("nt-inscriptions-ouvertes").addEventListener("change", async (e) => {
+    if (!currentTournamentId) return;
+    await updateTournament(currentTournamentId, { inscriptionsOuvertes: e.target.checked });
+    currentTournament = await getTournament(currentTournamentId);
+  });
+
   document.getElementById("btn-create-tournament").addEventListener("click", async () => {
     const btn = document.getElementById("btn-create-tournament");
     const nom = document.getElementById("nt-nom").value.trim();
@@ -150,6 +158,8 @@ function init() {
       const nbQualifiesRaw = document.getElementById("nt-nbqualifies").value;
       const id = await createTournament({
         nom,
+        dateDebut: document.getElementById("nt-datedebut").value || null,
+        dateFin: document.getElementById("nt-datefin").value || null,
         tailleGroupeVisee: Number(document.getElementById("nt-taillegroupe").value),
         nbMiTemps: Number(document.getElementById("nt-nbmitemps").value),
         dureeMiTemps: Number(document.getElementById("nt-dureemitemps").value),
@@ -484,11 +494,9 @@ function init() {
     if (importEnCours) return;
     if (!currentTournamentId) return alert("Sélectionne ou crée d'abord un tournoi.");
 
-    const fileEquipes = document.getElementById("imp-file-equipes").files[0];
-    const fileMembres = document.getElementById("imp-file-membres").files[0];
-    const fileMatchs = document.getElementById("imp-file-matchs").files[0];
-    if (!fileEquipes && !fileMembres && !fileMatchs) {
-      return alert("Choisis au moins un fichier CSV à importer (équipes, membres et/ou matchs).");
+    const fichiers = [...document.getElementById("imp-files").files];
+    if (!fichiers.length) {
+      return alert("Choisis au moins un fichier CSV à importer.");
     }
 
     const btn = document.getElementById("btn-import-tournoi");
@@ -499,11 +507,41 @@ function init() {
     resultEl.textContent = "";
 
     try {
-      const [rowsEquipes, rowsMembres, rowsMatchs] = await Promise.all([
-        fileEquipes ? readCsvFile(fileEquipes) : Promise.resolve([]),
-        fileMembres ? readCsvFile(fileMembres) : Promise.resolve([]),
-        fileMatchs ? readCsvFile(fileMatchs) : Promise.resolve([]),
-      ]);
+      // Détection automatique du type de chaque fichier déposé, à partir de
+      // ses colonnes — plus besoin de se souvenir de quelle case correspond
+      // à quoi, ni de risquer de mettre le mauvais fichier au mauvais
+      // endroit : on regarde ce que chaque fichier CONTIENT et on range en
+      // conséquence, en ignorant ce qui ne correspond à rien de connu.
+      const rowsEquipes = [];
+      const rowsMembres = [];
+      const rowsMatchs = [];
+      const rapportDetection = [];
+      for (const fichier of fichiers) {
+        const rows = await readCsvFile(fichier);
+        if (!rows.length) {
+          rapportDetection.push(`"${fichier.name}" : fichier vide, ignoré.`);
+          continue;
+        }
+        const entetes = new Set(Object.keys(rows[0]));
+        let type;
+        if (entetes.has("equipea") || entetes.has("equipeb")) {
+          type = "matchs";
+          rowsMatchs.push(...rows);
+        } else if (entetes.has("equipe") && entetes.has("nom")) {
+          type = "membres";
+          rowsMembres.push(...rows);
+        } else if (entetes.has("nom")) {
+          type = "équipes";
+          rowsEquipes.push(...rows);
+        } else {
+          type = null;
+        }
+        rapportDetection.push(
+          type
+            ? `"${fichier.name}" → reconnu comme fichier ${type} (${rows.length} ligne(s)).`
+            : `"${fichier.name}" : colonnes non reconnues (${[...entetes].join(", ") || "aucune"}) — ignoré.`
+        );
+      }
 
       // 1. Équipes : réutilise une équipe existante du hub si le nom
       // correspond déjà (insensible à la casse), sinon la crée avec un mot
@@ -612,6 +650,7 @@ function init() {
       if (matchsFinal.length) await saveMatches(currentTournamentId, matchsFinal);
 
       const lignes = [
+        ...rapportDetection,
         `${rowsEquipes.length} équipe(s) traitée(s) dans le fichier équipes.`,
         `${nbMembresAjoutes} membre(s) ajouté(s).`,
         `${matchsFinal.length} match(s) importé(s)${rowsMatchs.length > matchsFinal.length ? ` (${rowsMatchs.length - matchsFinal.length} ignoré(s) : ${nomsIntrouvables.size ? "équipe introuvable et/ou " : ""}doublon détecté)` : ""}.`,
@@ -723,6 +762,11 @@ function selectTournament(id) {
     recomputeVenues();
     renderTeams();
     renderTerrainsDisponibles();
+    document.getElementById("nt-inscriptions-ouvertes").checked = t.inscriptionsOuvertes !== false;
+    const lien = `${location.origin}${location.pathname.replace(/admin\.html$/, "")}index.html?tournoi=${id}`;
+    const lienEl = document.getElementById("lien-public-tournoi");
+    lienEl.href = lien;
+    lienEl.textContent = lien;
   });
 
   unsubInscriptions = watchInscriptions(id, (list) => {
@@ -1281,6 +1325,12 @@ function renderAdmins(admins) {
 //   equipes.csv : nom,groupe
 //   membres.csv : equipe,nom
 //   matchs.csv  : groupe,equipeA,equipeB,date,heureDebut,heureFin,terrain(optionnel)
+
+function formaterDateFr(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
 
 function normaliseNom(nom) {
   return (nom || "")

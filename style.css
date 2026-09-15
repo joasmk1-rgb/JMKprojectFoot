@@ -155,6 +155,35 @@ th { background: var(--rouge-clair); color: var(--rouge); }
   flex-wrap: wrap;
 }
 
+.tournois-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.tournoi-carte {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--fond-input);
+  border: 1px solid var(--bordure);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+  color: var(--texte);
+  font-family: inherit;
+}
+
+.tournoi-carte:hover {
+  border-color: var(--rouge);
+}
+
+.tournoi-carte-active {
+  border-color: var(--rouge);
+  box-shadow: 0 0 0 1px var(--rouge);
+}
+
 /* ---------- Grille de disponibilité (dispo/pas dispo) ---------- */
 .dispo-toolbar {
   display: flex;

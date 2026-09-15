@@ -2,6 +2,8 @@ import {
   watchTournaments, getTournament, watchEquipes, watchInscriptions, watchMatches,
   findEquipeByPassword, updateEquipe, addEquipeMember, removeEquipeMember,
   setEquipeAvailability, getPlayersByIds, getInscriptionsForEquipe,
+  createPlayer, findPlayerByPassword, createEquipe, inscrireEquipe,
+  demanderAdhesion, accepterAdhesion, refuserAdhesion, getEquipesForPlayer,
 } from "./db.js";
 import { computeStandings } from "./schedule.js";
 import * as Grid from "./grid.js";
@@ -12,7 +14,8 @@ let equipesGlobal = []; // TOUTES les équipes du hub (globales)
 let inscriptions = []; // inscriptions du tournoi actuellement affiché
 let teams = []; // vue fusionnée équipe+inscription, pour CE tournoi (noms, groupe, standings)
 let matches = [];
-let myTeam = null; // équipe globale connectée (capitaine) — indépendante du tournoi affiché
+let myTeam = null; // équipe globale actuellement gérée — indépendante du tournoi affiché
+let currentPlayer = null; // compte joueur connecté sur CETTE page (indépendant de myTeam)
 let unsubInscriptions = null;
 let unsubMatches = null;
 
@@ -40,12 +43,57 @@ function recomputeTeams() {
   renderPublicMatches();
 }
 
-// ---------- Tournoi sélectionné ----------
+// ---------- Liste des tournois (page d'accueil : on choisit lequel voir) ----------
+// Le lien public d'un tournoi (partagé depuis l'admin) contient
+// ?tournoi=ID dans l'URL — s'il est présent et valide, on l'ouvre
+// directement au chargement plutôt que le premier de la liste.
+let tournamentsList = [];
+const idDepuisUrl = new URLSearchParams(location.search).get("tournoi");
+
 watchTournaments((list) => {
+  tournamentsList = list;
+  renderListeTournois(list);
   const select = document.getElementById("select-tournament");
-  select.innerHTML = list.map((t) => `<option value="${t.id}">${t.nom}</option>`).join("");
-  if (list.length && !currentTournamentId) selectTournament(list[0].id);
+  select.innerHTML = list
+    .map((t) => `<option value="${t.id}">${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}</option>`)
+    .join("");
+  if (!currentTournamentId && list.length) {
+    const cible = idDepuisUrl && list.some((t) => t.id === idDepuisUrl) ? idDepuisUrl : list[0].id;
+    selectTournament(cible);
+  }
 });
+
+function formaterDateFr(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+// Cartes cliquables listant tous les tournois (nom, dates, statut) — la
+// page d'accueil demandée par Joas plutôt qu'un simple menu déroulant.
+function renderListeTournois(list) {
+  const container = document.getElementById("liste-tournois");
+  if (!container) return;
+  if (!list.length) {
+    container.innerHTML = `<p class="muted">Aucun tournoi pour l'instant.</p>`;
+    return;
+  }
+  container.innerHTML = list
+    .map((t) => {
+      const dates = t.dateDebut
+        ? `${formaterDateFr(t.dateDebut)}${t.dateFin && t.dateFin !== t.dateDebut ? ` → ${formaterDateFr(t.dateFin)}` : ""}`
+        : "Date à confirmer";
+      return `
+    <button class="tournoi-carte ${t.id === currentTournamentId ? "tournoi-carte-active" : ""}" data-choisir-tournoi="${t.id}">
+      <strong>${t.nom}</strong>
+      <span class="muted">${dates} — ${t.statut}${t.inscriptionsOuvertes === false ? " · inscriptions fermées" : ""}</span>
+    </button>`;
+    })
+    .join("");
+  container.querySelectorAll("[data-choisir-tournoi]").forEach((btn) =>
+    btn.addEventListener("click", () => selectTournament(btn.dataset.choisirTournoi))
+  );
+}
 
 document.getElementById("select-tournament").addEventListener("change", (e) => {
   selectTournament(e.target.value);
@@ -54,9 +102,19 @@ document.getElementById("select-tournament").addEventListener("change", (e) => {
 function selectTournament(id) {
   currentTournamentId = id;
   document.getElementById("select-tournament").value = id;
+  renderListeTournois(tournamentsList);
+
+  // Rend le lien de cette page partageable pour CE tournoi précis, sans
+  // recharger la page (le lien qu'on copie depuis la barre d'adresse marche
+  // directement, et depuis l'admin aussi).
+  const url = new URL(location.href);
+  url.searchParams.set("tournoi", id);
+  history.replaceState(null, "", url);
+
   getTournament(id).then((t) => {
     currentTournament = t;
     renderStandings();
+    renderInscriptionPanel();
     if (myTeam) renderMyTeam();
   });
 
@@ -64,6 +122,7 @@ function selectTournament(id) {
   unsubInscriptions = watchInscriptions(id, (list) => {
     inscriptions = list;
     recomputeTeams();
+    renderInscriptionPanel();
   });
 
   if (unsubMatches) unsubMatches();
@@ -148,6 +207,32 @@ const btnCaptainLogin = document.getElementById("btn-captain-login");
 const captainPasswordInput = document.getElementById("captain-password");
 let captainLoginEnCours = false;
 
+// Donne accès à la gestion d'une équipe (composition, dispo, inscriptions,
+// demandes d'adhésion) — que ce soit via le mot de passe capitaine OU parce
+// que le joueur connecté est un membre lié : les deux donnent EXACTEMENT
+// les mêmes droits, seul le champ "contact capitaine" distingue qui appeler.
+async function activerMyTeam(equipe) {
+  myTeam = equipe;
+  document.getElementById("captain-status").textContent = `Équipe gérée : ${equipe.nom}`;
+  btnCaptainLogin.hidden = true;
+  captainPasswordInput.hidden = true;
+  document.getElementById("btn-captain-logout").hidden = false;
+  document.getElementById("tab-btn-mon-equipe").hidden = false;
+  document.getElementById("my-terrain-pref").value = equipe.preferenceTerrain || "";
+
+  // Une équipe peut être inscrite à plusieurs tournois désormais — si elle
+  // n'est pas inscrite au tournoi actuellement affiché mais l'est à un
+  // autre, on bascule automatiquement sur celui-là.
+  const mesInscriptions = await getInscriptionsForEquipe(equipe.id);
+  const dejaSurBonTournoi = mesInscriptions.some((i) => i.tournamentId === currentTournamentId);
+  if (!dejaSurBonTournoi && mesInscriptions.length) {
+    selectTournament(mesInscriptions[0].tournamentId);
+  } else {
+    renderMyTeam();
+  }
+  renderInscriptionPanel();
+}
+
 async function tenterCaptainLogin() {
   if (captainLoginEnCours) return;
   captainLoginEnCours = true;
@@ -161,24 +246,7 @@ async function tenterCaptainLogin() {
       alert("Mot de passe non reconnu.");
       return;
     }
-    myTeam = found;
-    document.getElementById("captain-status").textContent = `Connecté : ${found.nom}`;
-    btnCaptainLogin.hidden = true;
-    captainPasswordInput.hidden = true;
-    document.getElementById("btn-captain-logout").hidden = false;
-    document.getElementById("tab-btn-mon-equipe").hidden = false;
-    document.getElementById("my-terrain-pref").value = found.preferenceTerrain || "";
-
-    // Une équipe peut être inscrite à plusieurs tournois désormais — si elle
-    // n'est pas inscrite au tournoi actuellement affiché mais l'est à un
-    // autre, on bascule automatiquement sur celui-là.
-    const mesInscriptions = await getInscriptionsForEquipe(found.id);
-    const dejaSurBonTournoi = mesInscriptions.some((i) => i.tournamentId === currentTournamentId);
-    if (!dejaSurBonTournoi && mesInscriptions.length) {
-      selectTournament(mesInscriptions[0].tournamentId);
-    } else {
-      renderMyTeam();
-    }
+    await activerMyTeam(found);
   } finally {
     captainLoginEnCours = false;
     btnCaptainLogin.disabled = false;
@@ -198,6 +266,7 @@ document.getElementById("btn-captain-logout").addEventListener("click", () => {
   document.getElementById("captain-password").hidden = false;
   document.getElementById("btn-captain-logout").hidden = true;
   document.getElementById("tab-btn-mon-equipe").hidden = true;
+  renderInscriptionPanel();
 });
 
 function renderMyTeam() {
@@ -243,8 +312,48 @@ function renderMyTeam() {
     })
   );
 
+  // Inscription de MON équipe au tournoi actuellement affiché, si ce n'est
+  // pas déjà fait — pratique pour un membre qui gère déjà son équipe et
+  // veut l'engager sur un nouveau tournoi sans repasser par un code.
+  const inscritACe = teams.some((t) => t.id === myTeam.id);
+  const inscrireBtn = document.getElementById("btn-inscrire-mon-equipe-ici");
+  if (inscrireBtn) {
+    inscrireBtn.hidden = inscritACe || !currentTournamentId;
+  }
+
+  // Demandes d'adhésion en attente — n'importe quel membre lié peut
+  // accepter/refuser, pas seulement le contact capitaine.
+  const demandesEl = document.getElementById("demandes-adhesion-list");
+  if (demandesEl) {
+    const demandes = teamFraiche.demandesAdhesion || [];
+    demandesEl.innerHTML = demandes.length
+      ? demandes
+          .map(
+            (d) => `
+      <div class="creneau-row">
+        <span>${d.nom}</span>
+        <button data-accepter-demande="${d.joueurId}" class="secondaire">✅ Accepter</button>
+        <button data-refuser-demande="${d.joueurId}" class="danger">❌ Refuser</button>
+      </div>`
+          )
+          .join("")
+      : `<p class="muted">Aucune demande d'adhésion en attente.</p>`;
+    demandesEl.querySelectorAll("[data-accepter-demande]").forEach((btn) =>
+      btn.addEventListener("click", () => accepterAdhesion(myTeam.id, btn.dataset.accepterDemande))
+    );
+    demandesEl.querySelectorAll("[data-refuser-demande]").forEach((btn) =>
+      btn.addEventListener("click", () => refuserAdhesion(myTeam.id, btn.dataset.refuserDemande))
+    );
+  }
+
   renderCoequipiersDispoGrid(teamFraiche);
 }
+
+document.getElementById("btn-inscrire-mon-equipe-ici")?.addEventListener("click", async () => {
+  if (!myTeam || !currentTournamentId) return;
+  await inscrireEquipe(currentTournamentId, myTeam.id);
+  alert("Équipe inscrite — en attente de validation par l'organisateur.");
+});
 
 // ===================== DISPO DES COÉQUIPIERS (comptes liés) =====================
 const coequipiersDispoDates = Grid.buildDateList(new Date(), 21);
@@ -558,3 +667,209 @@ document.getElementById("btn-mr-appliquer").addEventListener("click", async () =
   document.getElementById("mr-result").textContent = `${cibles.length} créneau(x) mis à jour.`;
   await persistDispoMarks();
 });
+
+// ===================== INSCRIPTION PUBLIQUE À UN TOURNOI =====================
+// Page d'entrée pour quelqu'un qui arrive via le lien partagé d'un tournoi :
+// se connecter/créer un compte joueur, puis soit créer son équipe et
+// l'inscrire, soit inscrire une équipe existante, soit demander à
+// rejoindre une équipe déjà inscrite à CE tournoi (demande qu'un membre
+// déjà lié devra accepter — pas d'ajout instantané, contrairement au code
+// d'invitation classique qui reste disponible côté page joueur).
+
+const btnInscJLogin = document.getElementById("insc-j-btn-login");
+const btnInscJSignup = document.getElementById("insc-j-btn-signup");
+
+btnInscJLogin?.addEventListener("click", async () => {
+  const errorEl = document.getElementById("insc-j-error");
+  errorEl.textContent = "";
+  const password = document.getElementById("insc-j-password").value;
+  if (!password) return;
+  btnInscJLogin.disabled = true;
+  try {
+    const found = await findPlayerByPassword(password);
+    if (!found) {
+      errorEl.textContent = "Mot de passe non reconnu.";
+      return;
+    }
+    await connecterJoueurInscription(found);
+  } catch (e) {
+    errorEl.textContent = "Erreur de connexion — réessaie.";
+    console.error(e);
+  } finally {
+    btnInscJLogin.disabled = false;
+  }
+});
+
+btnInscJSignup?.addEventListener("click", async () => {
+  const errorEl = document.getElementById("insc-j-error");
+  errorEl.textContent = "";
+  const nom = document.getElementById("insc-j-signup-nom").value.trim();
+  const password = document.getElementById("insc-j-signup-password").value;
+  if (!nom || !password) {
+    errorEl.textContent = "Nom et mot de passe obligatoires.";
+    return;
+  }
+  btnInscJSignup.disabled = true;
+  try {
+    const existant = await findPlayerByPassword(password);
+    if (existant) {
+      errorEl.textContent = "Ce mot de passe est déjà pris, choisis-en un autre.";
+      return;
+    }
+    const id = await createPlayer(nom, password);
+    await connecterJoueurInscription({ id, nom, dispos: {} });
+  } catch (e) {
+    errorEl.textContent = "Erreur lors de la création du compte — réessaie.";
+    console.error(e);
+  } finally {
+    btnInscJSignup.disabled = false;
+  }
+});
+
+async function connecterJoueurInscription(joueur) {
+  currentPlayer = joueur;
+  document.getElementById("insc-connexion-joueur").hidden = true;
+  document.getElementById("insc-connecte").hidden = false;
+  document.getElementById("insc-j-nom-affiche").textContent = joueur.nom;
+  await renderMesEquipesInscription();
+  renderInscriptionPanel();
+}
+
+document.getElementById("insc-j-btn-logout")?.addEventListener("click", () => {
+  currentPlayer = null;
+  document.getElementById("insc-connexion-joueur").hidden = false;
+  document.getElementById("insc-connecte").hidden = true;
+  renderInscriptionPanel();
+});
+
+// Équipes déjà gérées par ce joueur (compte lié) — bouton "Gérer" direct,
+// sans redemander le mot de passe capitaine.
+async function renderMesEquipesInscription() {
+  const container = document.getElementById("insc-mes-equipes");
+  if (!container || !currentPlayer) return;
+  const mesEquipes = await getEquipesForPlayer(currentPlayer.id);
+  if (!mesEquipes.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML =
+    `<p class="champ-label">Tes équipes</p>` +
+    mesEquipes
+      .map(
+        (e) =>
+          `<div class="creneau-row"><span>${e.nom}</span><button data-gerer-equipe="${e.id}" class="secondaire">Gérer cette équipe</button></div>`
+      )
+      .join("");
+  container.querySelectorAll("[data-gerer-equipe]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const equipe = mesEquipes.find((e) => e.id === btn.dataset.gererEquipe);
+      if (equipe) activerMyTeam(equipe);
+    })
+  );
+}
+
+// Créer une nouvelle équipe (le joueur connecté devient le premier membre
+// lié, avec les mêmes droits que n'importe quel autre membre) puis
+// l'inscrire directement à ce tournoi.
+document.getElementById("insc-btn-creer-equipe")?.addEventListener("click", async () => {
+  if (!currentPlayer || !currentTournamentId) return;
+  const nom = document.getElementById("insc-nouvelle-eq-nom").value.trim();
+  if (!nom) return alert("Le nom de l'équipe est obligatoire.");
+  const password =
+    document.getElementById("insc-nouvelle-eq-password").value.trim() || Math.random().toString(36).slice(2, 10);
+  const contact = document.getElementById("insc-nouvelle-eq-contact").value.trim();
+  const btn = document.getElementById("insc-btn-creer-equipe");
+  btn.disabled = true;
+  try {
+    const id = await createEquipe({
+      nom,
+      capitainePassword: password,
+      capitaineNom: currentPlayer.nom,
+      capitaineContact: contact || null,
+      membres: [{ type: "compte", joueurId: currentPlayer.id, nom: currentPlayer.nom }],
+    });
+    await inscrireEquipe(currentTournamentId, id);
+    document.getElementById("insc-result").innerHTML =
+      `Équipe "${nom}" créée et inscrite — en attente de validation par l'organisateur. ` +
+      `Mot de passe équipe (à conserver, utile pour te reconnecter si besoin) : <strong>${password}</strong>`;
+    document.getElementById("insc-nouvelle-eq-nom").value = "";
+    document.getElementById("insc-nouvelle-eq-password").value = "";
+    document.getElementById("insc-nouvelle-eq-contact").value = "";
+    await renderMesEquipesInscription();
+  } catch (e) {
+    console.error(e);
+    alert("Erreur lors de la création : " + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Inscrire une équipe existante (dont on connaît le mot de passe) à ce
+// tournoi — rattache aussi le joueur connecté comme membre lié s'il ne
+// l'était pas déjà, pour qu'il puisse la gérer directement la prochaine fois.
+document.getElementById("insc-btn-connecter-equipe")?.addEventListener("click", async () => {
+  if (!currentPlayer || !currentTournamentId) return;
+  const password = document.getElementById("insc-eq-password").value;
+  if (!password) return;
+  const btn = document.getElementById("insc-btn-connecter-equipe");
+  btn.disabled = true;
+  try {
+    const equipe = await findEquipeByPassword(password);
+    if (!equipe) {
+      document.getElementById("insc-result").textContent = "Mot de passe équipe non reconnu.";
+      return;
+    }
+    const dejaMembre = (equipe.membres || []).some((m) => m.type === "compte" && m.joueurId === currentPlayer.id);
+    if (!dejaMembre) {
+      await addEquipeMember(equipe.id, { type: "compte", joueurId: currentPlayer.id, nom: currentPlayer.nom });
+    }
+    await inscrireEquipe(currentTournamentId, equipe.id);
+    document.getElementById("insc-result").textContent = `Équipe "${equipe.nom}" inscrite — en attente de validation par l'organisateur.`;
+    document.getElementById("insc-eq-password").value = "";
+    await renderMesEquipesInscription();
+  } catch (e) {
+    console.error(e);
+    alert("Erreur : " + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Demander à rejoindre une équipe déjà inscrite à ce tournoi — la demande
+// attend qu'un membre déjà lié de cette équipe l'accepte (voir "Mon équipe"
+// → "Demandes d'adhésion en attente").
+document.getElementById("insc-liste-equipes-rejoindre")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-demander-adhesion]");
+  if (!btn || !currentPlayer) return;
+  btn.disabled = true;
+  btn.textContent = "Demande envoyée...";
+  try {
+    await demanderAdhesion(btn.dataset.demanderAdhesion, { joueurId: currentPlayer.id, nom: currentPlayer.nom });
+  } catch (e2) {
+    console.error(e2);
+    btn.disabled = false;
+    btn.textContent = "Demander à rejoindre";
+  }
+});
+
+function renderInscriptionPanel() {
+  const ouvertEl = document.getElementById("insc-statut-fermees");
+  if (ouvertEl) {
+    ouvertEl.hidden = !(currentTournament && currentTournament.inscriptionsOuvertes === false);
+  }
+
+  const listeEl = document.getElementById("insc-liste-equipes-rejoindre");
+  if (listeEl) {
+    listeEl.innerHTML = teams.length
+      ? teams
+          .map(
+            (t) => `
+      <div class="creneau-row">
+        <span>${t.nom} <span class="muted">(${t.statut})</span></span>
+        <button data-demander-adhesion="${t.id}" class="secondaire">Demander à rejoindre</button>
+      </div>`
+          )
+          .join("")
+      : `<p class="muted">Aucune équipe encore inscrite à ce tournoi pour l'instant — sois le premier !</p>`;
+  }
+}

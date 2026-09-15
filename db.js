@@ -120,7 +120,13 @@ export async function createEquipe(data) {
     capitainePassword: data.capitainePassword,
     codeEquipe: genererCode(),
     preferenceTerrain: data.preferenceTerrain || null,
-    membres: [], // { type: "libre"|"compte", nom, poste?, numero?, piedFort?, joueurId? }
+    // Le "capitaine" n'a plus de droits particuliers sur l'équipe par
+    // rapport aux autres membres liés (comptes joueurs) — ces deux champs
+    // servent UNIQUEMENT à savoir qui contacter en cas de besoin.
+    capitaineNom: data.capitaineNom || null,
+    capitaineContact: data.capitaineContact || null,
+    membres: data.membres || [], // { type: "libre"|"compte", nom, poste?, numero?, piedFort?, joueurId? }
+    demandesAdhesion: [], // { joueurId, nom, dateDemande } — en attente d'acceptation par un membre déjà lié
     dispos: {}, // { "date|heure": "available"|"unavailable" }
     sondagesJoueurs: [], // créneaux sondés auprès des coéquipiers
     createdAt: serverTimestamp(),
@@ -197,6 +203,42 @@ export async function getEquipesForPlayer(joueurId) {
     .map((d) => ({ id: d.id, ...d.data() }));
 }
 
+// ---------- Demandes d'adhésion à une équipe (inscription publique) ----------
+// Sur la page publique, un joueur sans équipe peut demander à rejoindre une
+// équipe déjà inscrite à un tournoi plutôt que de saisir un code — la
+// demande atterrit en attente, et n'IMPORTE QUEL membre déjà lié à
+// l'équipe (pas seulement le "capitaine" contact) peut l'accepter/refuser,
+// puisque tous les membres liés ont les mêmes droits de gestion.
+
+export async function demanderAdhesion(equipeId, { joueurId, nom }) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const equipe = snap.data();
+  const dejaMembre = (equipe.membres || []).some((m) => m.type === "compte" && m.joueurId === joueurId);
+  const dejaDemande = (equipe.demandesAdhesion || []).some((d) => d.joueurId === joueurId);
+  if (dejaMembre || dejaDemande) return; // pas de doublon
+  const demandesAdhesion = [...(equipe.demandesAdhesion || []), { joueurId, nom, dateDemande: new Date().toISOString() }];
+  await updateDoc(ref, { demandesAdhesion });
+}
+
+export async function accepterAdhesion(equipeId, joueurId) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const equipe = snap.data();
+  const demande = (equipe.demandesAdhesion || []).find((d) => d.joueurId === joueurId);
+  if (!demande) return;
+  const demandesAdhesion = (equipe.demandesAdhesion || []).filter((d) => d.joueurId !== joueurId);
+  const membres = [...(equipe.membres || []), { type: "compte", joueurId, nom: demande.nom }];
+  await updateDoc(ref, { demandesAdhesion, membres });
+}
+
+export async function refuserAdhesion(equipeId, joueurId) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const demandesAdhesion = (snap.data().demandesAdhesion || []).filter((d) => d.joueurId !== joueurId);
+  await updateDoc(ref, { demandesAdhesion });
+}
+
 // ---------- TERRAINS (globaux) ----------
 // Un terrain existe une fois, avec sa propre grille de dispo réelle
 // (peinte comme pour les équipes/joueurs) — un tournoi choisit ensuite
@@ -239,6 +281,9 @@ export async function createTournament(data) {
     nom: data.nom,
     sport: data.sport || "football",
     statut: "préparation", // préparation | en_cours | terminé
+    dateDebut: data.dateDebut || null, // date du tournoi (ou premier jour si plusieurs) — affichée sur la page publique
+    dateFin: data.dateFin || null, // optionnel, si le tournoi s'étale sur plusieurs jours
+    inscriptionsOuvertes: data.inscriptionsOuvertes !== false, // permet de fermer les inscriptions publiques sans supprimer le tournoi
     tailleGroupeVisee: data.tailleGroupeVisee, // ex: 4 -> le nb de groupes se recalcule tout seul selon le nb réel d'équipes inscrites
     nbMiTemps: data.nbMiTemps,
     dureeMiTemps: data.dureeMiTemps,
