@@ -599,7 +599,6 @@ function init() {
   let importEnCours = false;
   document.getElementById("btn-import-tournoi").addEventListener("click", async () => {
     if (importEnCours) return;
-    if (!currentTournamentId) return alert("Sélectionne ou crée d'abord un tournoi.");
 
     const fichiers = [...document.getElementById("imp-files").files];
     if (!fichiers.length) {
@@ -663,6 +662,16 @@ function init() {
         return nomTournoiCsv || null; // null = "pas de colonne, utiliser le tournoi sélectionné"
       }
       const nomsTournoisPresents = new Set([...rowsEquipes, ...rowsMatchs, ...rowsMembres].map(clePourGroupe));
+
+      // Le tournoi sélectionné en haut de page n'est nécessaire QUE si au
+      // moins une ligne n'a pas de colonne "tournoi" à elle (donc compte sur
+      // le tournoi actuellement affiché) — un import entièrement étiqueté
+      // par tournoi n'en a pas besoin.
+      if (nomsTournoisPresents.has(null) && !currentTournamentId) {
+        throw new Error(
+          "Au moins une ligne de ton fichier n'a pas de colonne \"tournoi\" — sélectionne ou crée d'abord un tournoi en haut de page pour ces lignes-là, ou ajoute la colonne \"tournoi\" partout."
+        );
+      }
 
       // Un seul mot-clé "tournoi" peut apparaître sous plusieurs casses —
       // on regroupe par nom normalisé pour éviter de créer deux tournois
