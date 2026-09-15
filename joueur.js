@@ -161,7 +161,9 @@ async function renderHistoriqueProposes() {
   document.getElementById("j-historique-liste").innerHTML = found
     .map(
       (p, i) => `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-      <input type="checkbox" class="j-historique-check" value="${i}" style="width:auto;" checked /> ${p.equipeNom} <span class="muted">(enregistré comme "${p.nomMembre}")</span>
+      <input type="checkbox" class="j-historique-check" value="${i}" style="width:auto;" checked /> ${p.equipeNom}${
+        p.tournamentNom ? ` — ${p.tournamentNom}` : ""
+      } <span class="muted">(enregistré comme "${p.nomMembre}")</span>
     </label>`
     )
     .join("");
@@ -178,7 +180,7 @@ document.getElementById("j-btn-lier-historique").addEventListener("click", async
   resultEl.textContent = "Liaison en cours...";
   for (const i of indices) {
     const p = participationsProposees[i];
-    await lierMembreLibre(p.equipeId, p.index, currentPlayer);
+    await lierMembreLibre(p.tournamentId, p.equipeId, p.index, currentPlayer);
   }
   resultEl.textContent = `${indices.length} participation(s) liée(s) à ton compte ✓`;
   renderMesEquipes();

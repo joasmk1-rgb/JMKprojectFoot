@@ -193,28 +193,90 @@ function normaliseNomSimple(nom) {
     .replace(/\s+/g, " ");
 }
 
+// Cherche parmi TOUS les effectifs importés par tournoi (membresHistorique
+// de chaque inscription — voir plus bas) une personne enregistrée sous ce
+// nom sans compte lié, pour proposer au joueur de s'auto-associer à sa
+// première connexion. On regarde aussi, par sécurité/rétrocompatibilité,
+// l'ancien emplacement (équipe globale) au cas où un membre "libre" s'y
+// trouverait encore.
 export async function trouverParticipationsLibres(nom) {
   const cible = normaliseNomSimple(nom);
   if (!cible) return [];
-  const equipes = await getEquipes();
   const resultats = [];
-  for (const e of equipes) {
-    (e.membres || []).forEach((m, index) => {
+
+  const [inscriptionsSnap, equipesSnap, tournamentsSnap] = await Promise.all([
+    getDocs(collectionGroup(db, "inscriptions")),
+    getDocs(collection(db, "equipes")),
+    getDocs(collection(db, "tournaments")),
+  ]);
+  const equipeNomParId = new Map(equipesSnap.docs.map((d) => [d.id, d.data().nom]));
+  const tournamentNomParId = new Map(tournamentsSnap.docs.map((d) => [d.id, d.data().nom]));
+
+  inscriptionsSnap.docs.forEach((d) => {
+    const tournamentId = d.ref.parent.parent.id;
+    const equipeId = d.id;
+    (d.data().membresHistorique || []).forEach((m, index) => {
       if (m.type === "libre" && normaliseNomSimple(m.nom) === cible) {
-        resultats.push({ equipeId: e.id, equipeNom: e.nom, index, nomMembre: m.nom });
+        resultats.push({
+          tournamentId,
+          equipeId,
+          equipeNom: equipeNomParId.get(equipeId) || "?",
+          tournamentNom: tournamentNomParId.get(tournamentId) || "?",
+          index,
+          nomMembre: m.nom,
+        });
       }
     });
-  }
+  });
+
+  // Rétrocompatibilité : anciens imports pas encore migrés vers le nouveau
+  // système (avant la séparation par tournoi).
+  equipesSnap.docs.forEach((d) => {
+    (d.data().membres || []).forEach((m, index) => {
+      if (m.type === "libre" && normaliseNomSimple(m.nom) === cible) {
+        resultats.push({ tournamentId: null, equipeId: d.id, equipeNom: d.data().nom, tournamentNom: null, index, nomMembre: m.nom });
+      }
+    });
+  });
+
   return resultats;
 }
 
-export async function lierMembreLibre(equipeId, index, joueur) {
-  const ref = doc(db, "equipes", equipeId);
+// Convertit un membre "libre" (issu d'un import CSV) trouvé dans
+// l'effectif d'UN tournoi précis en membre "compte" lié au joueur qui vient
+// de s'auto-associer. tournamentId === null = ancien emplacement (équipe
+// globale), gardé pour rétrocompatibilité.
+export async function lierMembreLibre(tournamentId, equipeId, index, joueur) {
+  const ref = tournamentId
+    ? doc(db, "tournaments", tournamentId, "inscriptions", equipeId)
+    : doc(db, "equipes", equipeId);
+  const champ = tournamentId ? "membresHistorique" : "membres";
   const snap = await getDoc(ref);
-  const membres = [...(snap.data().membres || [])];
-  if (!membres[index] || membres[index].type !== "libre") return; // a changé entre-temps, on n'écrase rien
-  membres[index] = { type: "compte", joueurId: joueur.id, nom: membres[index].nom };
-  await updateDoc(ref, { membres });
+  const liste = [...(snap.data()?.[champ] || [])];
+  if (!liste[index] || liste[index].type !== "libre") return; // a changé entre-temps, on n'écrase rien
+  liste[index] = { type: "compte", joueurId: joueur.id, nom: liste[index].nom };
+  await updateDoc(ref, { [champ]: liste });
+}
+
+// ---------- Effectif rattaché à une inscription (par tournoi) ----------
+// Les membres importés par CSV ("libre", sans compte) sont attachés à
+// l'inscription équipe+tournoi, pas à l'équipe globale : la même équipe qui
+// revient dans plusieurs tournois a ainsi un effectif distinct à chaque
+// fois. Le compte joueur "réel" (rejoint via code d'invitation) reste lui
+// sur l'équipe globale (addEquipeMember/removeEquipeMember plus bas) —
+// c'est un effectif vivant, pas un instantané historique par tournoi.
+export async function addInscriptionMembre(tournamentId, equipeId, member) {
+  const ref = doc(db, "tournaments", tournamentId, "inscriptions", equipeId);
+  const snap = await getDoc(ref);
+  const membresHistorique = [...(snap.data()?.membresHistorique || []), member];
+  await updateDoc(ref, { membresHistorique });
+}
+
+export async function removeInscriptionMembre(tournamentId, equipeId, index) {
+  const ref = doc(db, "tournaments", tournamentId, "inscriptions", equipeId);
+  const snap = await getDoc(ref);
+  const membresHistorique = (snap.data()?.membresHistorique || []).filter((_, i) => i !== index);
+  await updateDoc(ref, { membresHistorique });
 }
 
 export async function getEquipe(equipeId) {

@@ -36,7 +36,7 @@ function recomputeTeams() {
     .map((insc) => {
       const equipe = equipesGlobal.find((e) => e.id === insc.id);
       if (!equipe) return null;
-      return { ...equipe, id: insc.id, groupe: insc.groupe, statut: insc.statut, statutPaiement: insc.statutPaiement };
+      return { ...equipe, id: insc.id, groupe: insc.groupe, statut: insc.statut, statutPaiement: insc.statutPaiement, membresHistorique: insc.membresHistorique || [] };
     })
     .filter(Boolean);
   renderStandings();

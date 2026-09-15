@@ -207,7 +207,7 @@
     <div class="card">
       <h2>Importer un tournoi déjà joué</h2>
       <p class="aide">Pour reprendre un tournoi préparé ailleurs (Excel/Word/PDF converti en CSV) plutôt que de tout ressaisir : dépose un ou plusieurs fichiers CSV d'un coup, peu importe l'ordre — le type de chaque fichier est détecté automatiquement à partir de ses colonnes. Équipes : colonnes <code>nom, groupe</code>. Membres : colonnes <code>equipe, nom</code>. Matchs : colonnes <code>groupe, equipeA, equipeB, date, heureDebut, heureFin, terrain</code> (terrain optionnel). Un fichier dont les colonnes ne correspondent à rien de connu est simplement ignoré (signalé dans le résultat). Les équipes déjà existantes dans le hub (même nom) sont réutilisées ; les nouvelles sont créées avec un mot de passe capitaine temporaire à leur communiquer. Les matchs en double (mêmes équipes + même date/heure) sont détectés et te sont signalés avant import.</p>
-      <p class="aide"><strong>Plusieurs anciens tournois d'un coup :</strong> ajoute une colonne <code>tournoi</code> (nom exact du tournoi, comme il apparaît sur ton document source) dans equipes.csv et matchs.csv. Chaque nom différent va automatiquement dans SON tournoi à lui : s'il n'existe pas encore, il est créé tout seul, marqué comme historique. Sans cette colonne, tout part dans le tournoi actuellement sélectionné en haut de page (comportement d'avant).</p>
+      <p class="aide"><strong>Plusieurs anciens tournois d'un coup :</strong> ajoute une colonne <code>tournoi</code> (nom exact du tournoi, comme il apparaît sur ton document source) dans equipes.csv, membres.csv et matchs.csv. Chaque nom différent va automatiquement dans SON tournoi à lui : s'il n'existe pas encore, il est créé tout seul, marqué comme historique. Sans cette colonne, tout part dans le tournoi actuellement sélectionné en haut de page (comportement d'avant). Les membres importés sont rattachés à CE tournoi précis (pas à l'équipe en général) : une même équipe qui revient dans plusieurs tournois a donc un effectif bien distinct à chaque fois, jamais mélangé. Les groupes sont aussi automatiquement convertis en lettres (A, B, C...) même si ton fichier utilise des chiffres.</p>
       <label class="champ-label">Fichier(s) CSV à importer</label>
       <input type="file" id="imp-files" accept=".csv" multiple />
       <label class="champ-label">Terrain par défaut (si absent du fichier matchs)</label>
@@ -412,6 +412,35 @@
         <thead><tr><th><input type="checkbox" id="check-all-admins" /></th><th>Nom</th><th></th></tr></thead>
         <tbody id="admins-table"></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>⚠️ Réinitialiser les données</h2>
+      <p class="muted">Coche ce que tu veux effacer définitivement, pour repartir propre (par exemple avant de réimporter des CSV corrigés). Ton compte admin n'est jamais touché par cette action.</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;">
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="reset-tournois" style="width:auto;" checked />
+          Tournois (inscriptions et matchs inclus)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="reset-equipes" style="width:auto;" checked />
+          Équipes (et leurs effectifs)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="reset-terrains" style="width:auto;" />
+          Terrains
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="reset-joueurs" style="width:auto;" />
+          Comptes joueurs (dispos, arbitrage)
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="reset-championnats" style="width:auto;" />
+          Championnats
+        </label>
+      </div>
+      <button id="btn-reset-donnees" class="danger">Supprimer tout ce qui est coché</button>
+      <p class="muted" id="reset-status"></p>
     </div>
   </section>
 </main>
