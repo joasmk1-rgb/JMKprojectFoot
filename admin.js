@@ -477,7 +477,7 @@ function init() {
       const nomVersId = new Map(equipesGlobal.map((e) => [normaliseNom(e.nom), e.id]));
       const nouveauxMotsDePasse = [];
       for (const row of rowsEquipes) {
-        const nom = (row.nom || "").trim();
+        const nom = champCsv(row, "nom").trim();
         if (!nom) continue;
         const cle = normaliseNom(nom);
         let equipeId = nomVersId.get(cle);
@@ -489,8 +489,9 @@ function init() {
         }
         const dejaInscrite = teams.some((t) => t.id === equipeId);
         if (!dejaInscrite) await inscrireEquipe(currentTournamentId, equipeId);
-        if (row.groupe && row.groupe.trim()) {
-          await updateInscription(currentTournamentId, equipeId, { groupe: row.groupe.trim() });
+        const groupeCsv = champCsv(row, "groupe").trim();
+        if (groupeCsv) {
+          await updateInscription(currentTournamentId, equipeId, { groupe: groupeCsv });
         }
       }
 
@@ -503,8 +504,8 @@ function init() {
           .map((cle) => nomVersId.get(cle))
       ) : [];
       for (const row of rowsMembres) {
-        const cleEquipe = normaliseNom(row.equipe || "");
-        const nomMembre = (row.nom || "").trim();
+        const cleEquipe = normaliseNom(champCsv(row, "equipe"));
+        const nomMembre = champCsv(row, "nom").trim();
         if (!nomMembre || !nomVersId.has(cleEquipe)) continue;
         const equipeId = nomVersId.get(cleEquipe);
         const equipeFraiche = equipesGlobal.find((e) => e.id === equipeId);
@@ -521,29 +522,64 @@ function init() {
       // "terrain" du CSV si présente, sinon du champ texte de secours.
       const terrainParDefaut = document.getElementById("imp-terrain-defaut").value.trim();
       const nomsIntrouvables = new Set();
-      const matchsAImporter = [];
+      const matchsCandidats = [];
       for (const row of rowsMatchs) {
-        const idA = nomVersId.get(normaliseNom(row.equipeA || ""));
-        const idB = nomVersId.get(normaliseNom(row.equipeB || ""));
-        if (!idA) nomsIntrouvables.add(row.equipeA);
-        if (!idB) nomsIntrouvables.add(row.equipeB);
+        const nomEquipeA = champCsv(row, "equipeA", "equipe a", "equipea");
+        const nomEquipeB = champCsv(row, "equipeB", "equipe b", "equipeb");
+        const idA = nomVersId.get(normaliseNom(nomEquipeA));
+        const idB = nomVersId.get(normaliseNom(nomEquipeB));
+        if (!idA) nomsIntrouvables.add(nomEquipeA || "(colonne équipeA vide)");
+        if (!idB) nomsIntrouvables.add(nomEquipeB || "(colonne équipeB vide)");
         if (!idA || !idB) continue;
-        matchsAImporter.push({
+        matchsCandidats.push({
           equipeAId: idA,
           equipeBId: idB,
-          groupe: (row.groupe || "").trim() || null,
+          groupe: champCsv(row, "groupe").trim() || null,
           phase: "poule",
-          terrain: (row.terrain || "").trim() || terrainParDefaut || "À préciser",
-          date: (row.date || "").trim() || null,
-          heure: (row.heureDebut || row.heure || "").trim() || null,
+          terrain: champCsv(row, "terrain").trim() || terrainParDefaut || "À préciser",
+          date: champCsv(row, "date").trim() || null,
+          heure: champCsv(row, "heureDebut", "heure debut", "heure").trim() || null,
         });
       }
-      if (matchsAImporter.length) await saveMatches(currentTournamentId, matchsAImporter);
+
+      // Détection de doublons : même paire d'équipes (peu importe l'ordre)
+      // + même date + même heure, comparé aux matchs déjà présents dans ce
+      // tournoi ET entre les lignes du fichier lui-même (ré-import du même
+      // CSV, ou fichier qui contient déjà deux fois la même ligne).
+      function signatureMatch(m) {
+        return [m.equipeAId, m.equipeBId].sort().join("|") + "|" + (m.date || "") + "|" + (m.heure || "");
+      }
+      const signaturesExistantes = new Set(matches.map(signatureMatch));
+      const matchsAImporter = [];
+      const doublonsDetectes = [];
+      const signaturesVues = new Set(signaturesExistantes);
+      for (const m of matchsCandidats) {
+        const sig = signatureMatch(m);
+        if (signaturesVues.has(sig)) {
+          doublonsDetectes.push(m);
+        } else {
+          signaturesVues.add(sig);
+          matchsAImporter.push(m);
+        }
+      }
+
+      let matchsFinal = matchsAImporter;
+      if (doublonsDetectes.length) {
+        const detail = doublonsDetectes
+          .map((m) => `${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}${m.date ? " — " + m.date : ""}${m.heure ? " " + m.heure : ""}`)
+          .join("\n");
+        const ignorerDoublons = confirm(
+          `⚠️ ${doublonsDetectes.length} doublon(s) détecté(s) (même équipes + même date/heure qu'un match déjà présent, ou répété dans le fichier) :\n\n${detail}\n\nOK = ignorer ces doublons et importer seulement les nouveaux matchs.\nAnnuler = les importer quand même (créera des matchs en double).`
+        );
+        if (!ignorerDoublons) matchsFinal = matchsCandidats; // l'utilisateur veut tout importer, doublons compris
+      }
+
+      if (matchsFinal.length) await saveMatches(currentTournamentId, matchsFinal);
 
       const lignes = [
         `${rowsEquipes.length} équipe(s) traitée(s) dans le fichier équipes.`,
         `${nbMembresAjoutes} membre(s) ajouté(s).`,
-        `${matchsAImporter.length} match(s) importé(s)${rowsMatchs.length > matchsAImporter.length ? ` (${rowsMatchs.length - matchsAImporter.length} ignoré(s), équipe introuvable)` : ""}.`,
+        `${matchsFinal.length} match(s) importé(s)${rowsMatchs.length > matchsFinal.length ? ` (${rowsMatchs.length - matchsFinal.length} ignoré(s) : ${nomsIntrouvables.size ? "équipe introuvable et/ou " : ""}doublon détecté)` : ""}.`,
       ];
       if (nouveauxMotsDePasse.length) {
         lignes.push(`Nouvelles équipes créées avec mot de passe temporaire à communiquer au capitaine :`);
@@ -1144,6 +1180,18 @@ function renderAdmins(admins) {
 
 function normaliseNom(nom) {
   return (nom || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Lit un champ d'une ligne CSV en tolérant les variations de casse/accents
+// dans l'en-tête (parseCsv met déjà tout en minuscules, mais "équipeA" côté
+// utilisateur peut avoir été tapé avec accent ou espace) — évite que tout un
+// import échoue silencieusement à cause d'un en-tête mal deviné.
+function champCsv(row, ...noms) {
+  for (const n of noms) {
+    const cle = n.toLowerCase();
+    if (row[cle] !== undefined && row[cle] !== "") return row[cle];
+  }
+  return "";
 }
 
 function genererMotDePasseTemp() {
