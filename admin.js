@@ -4,7 +4,7 @@ import {
   createChampionnat, watchChampionnats, updateChampionnat, deleteChampionnat, getMatches,
   watchPlayers, updatePlayer, deletePlayer, getInscriptionsForEquipe,
   createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
-  addInscriptionMembre, removeInscriptionMembre,
+  addInscriptionMembre, removeInscriptionMembre, createPlayerNonRevendique,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe, getInscriptions,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch, updateMatch,
@@ -790,8 +790,12 @@ function init() {
         const membresActuels = await membresHistoriqueActuels(tournamentId, equipeId);
         const dejaMembre = membresActuels.some((m) => normaliseNom(m.nom) === normaliseNom(nomMembre));
         if (dejaMembre) continue;
-        await addInscriptionMembre(tournamentId, equipeId, { type: "libre", nom: nomMembre });
-        membresActuels.push({ type: "libre", nom: nomMembre });
+        // Chaque membre importé obtient directement un vrai compte joueur
+        // (sans mot de passe, "non revendiqué") — n'importe qui pourra
+        // ensuite le retrouver par son nom et le réclamer pour de bon.
+        const joueurId = await createPlayerNonRevendique(nomMembre);
+        await addInscriptionMembre(tournamentId, equipeId, { type: "non_revendique", joueurId, nom: nomMembre });
+        membresActuels.push({ type: "non_revendique", joueurId, nom: nomMembre });
         nbMembresAjoutes++;
       }
 
@@ -1488,7 +1492,9 @@ function renderComposition(equipeId) {
           .map(
             (m, i) => `<tr>
           <td>${m.nom}</td><td>${m.poste || "-"}</td><td>${m.numero || "-"}</td><td>${m.piedFort || "-"}</td>
-          <td><span class="badge ${m.type === "compte" ? "acte" : "propose"}">${m.type === "compte" ? "Compte" : "Libre"}</span></td>
+          <td><span class="badge ${m.type === "compte" ? "acte" : m.type === "non_revendique" ? "propose" : "forfait"}">${
+              m.type === "compte" ? "Compte" : m.type === "non_revendique" ? "Non revendiqué" : "Libre"
+            }</span></td>
           <td><button data-retirer-membre="${i}" data-historique="${historique}" class="danger">Retirer</button></td>
         </tr>`
           )
@@ -2113,6 +2119,13 @@ function renderJoueurs() {
       <td>${equipesLiees.length ? equipesLiees.map((e) => e.nom).join(", ") : `<span class="muted">aucune</span>`}</td>
       <td>
         ${
+          j.revendique === false
+            ? `<span class="badge propose">Non revendiqué</span>`
+            : `<span class="badge acte">Revendiqué</span> <button data-derevendiquer="${j.id}" class="secondaire">Dé-revendiquer</button>`
+        }
+      </td>
+      <td>
+        ${
           !j.disponiblePourArbitrer
             ? `<span class="muted">non intéressé(e)</span>`
             : j.arbitreValide
@@ -2144,6 +2157,13 @@ function renderJoueurs() {
     btn.addEventListener("click", () => {
       if (confirm("Supprimer ce compte joueur ? Il sera aussi retiré des équipes où il était lié (redevient un joueur \"libre\" pour elles, ou disparaît de la liste — l'équipe elle-même n'est pas touchée).")) {
         supprimerJoueur(btn.dataset.supprimerJoueur);
+      }
+    })
+  );
+  tbody.querySelectorAll("[data-derevendiquer]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (confirm("Dé-revendiquer ce compte ? Il redevient réclamable par n'importe qui via \"Revendiquer un profil\" (son mot de passe actuel cesse de fonctionner).")) {
+        updatePlayer(btn.dataset.derevendiquer, { password: null, revendique: false });
       }
     })
   );

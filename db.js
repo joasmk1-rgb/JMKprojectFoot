@@ -82,11 +82,49 @@ export async function createPlayer(nom, password) {
   const ref = await addDoc(collection(db, "joueurs"), {
     nom,
     password,
+    revendique: true, // un compte créé de zéro par son propriétaire est déjà "à lui"
     dispos: {}, // { "date|heure": "available"|"unavailable" }
     blocages: [], // créneaux bloqués récurrents : { jour: 0-6, heureDebut, heureFin, motif }
     createdAt: serverTimestamp(),
   });
   return ref.id;
+}
+
+// ---------- Comptes pré-créés à l'import (à revendiquer) ----------
+// Chaque membre importé par CSV obtient directement un vrai compte joueur
+// dans le hub, sans mot de passe — "revendique: false". N'importe qui peut
+// ensuite le retrouver par son nom et le revendiquer en lui donnant un mot
+// de passe ; une fois revendiqué, il devient un compte normal et personne
+// d'autre ne peut plus le reprendre.
+export async function createPlayerNonRevendique(nom) {
+  const ref = await addDoc(collection(db, "joueurs"), {
+    nom,
+    password: null,
+    revendique: false,
+    dispos: {},
+    blocages: [],
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function chercherProfilsNonRevendiques(recherche) {
+  const cible = normaliseNomSimple(recherche);
+  if (!cible) return [];
+  const snap = await getDocs(query(collection(db, "joueurs"), where("revendique", "==", false)));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((j) => normaliseNomSimple(j.nom).includes(cible));
+}
+
+// Retourne true si la revendication a réussi, false si le profil a déjà
+// été revendiqué entre-temps (course entre deux personnes) ou n'existe plus.
+export async function revendiquerProfil(joueurId, password) {
+  const ref = doc(db, "joueurs", joueurId);
+  const snap = await getDoc(ref);
+  if (!snap.exists() || snap.data().revendique) return false;
+  await updateDoc(ref, { password, revendique: true });
+  return true;
 }
 
 export async function findPlayerByPassword(password) {
@@ -330,6 +368,21 @@ export async function findEquipeByCode(code) {
 
 // Liste toutes les équipes (parmi la collection globale) dont ce joueur
 // fait partie en tant que membre "compte" lié.
+// Équipes où ce joueur apparaît dans l'effectif importé d'UN tournoi précis
+// (membresHistorique) — typiquement après une revendication de profil —
+// distinct de getEquipesForPlayer ci-dessous qui ne regarde que l'effectif
+// "compte" vivant de l'équipe (rejoint via code d'invitation).
+export async function getEquipesHistoriquesPourJoueur(joueurId) {
+  const inscriptionsSnap = await getDocs(collectionGroup(db, "inscriptions"));
+  const equipeIds = new Set();
+  inscriptionsSnap.docs.forEach((d) => {
+    const estMembre = (d.data().membresHistorique || []).some((m) => m.joueurId === joueurId);
+    if (estMembre) equipeIds.add(d.id);
+  });
+  const resultats = await Promise.all([...equipeIds].map((id) => getEquipe(id)));
+  return resultats.filter((e) => e !== null);
+}
+
 export async function getEquipesForPlayer(joueurId) {
   const snap = await getDocs(collection(db, "equipes"));
   return snap.docs

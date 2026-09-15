@@ -3,6 +3,7 @@ import {
   findEquipeByCode, addEquipeMember, getEquipesForPlayer, getInscriptionsForEquipe,
   getMatchsArbitrablesDisponibles, getMesMatchsArbitre, updateMatch, setMatchResult,
   getTournament, getEquipe, trouverParticipationsLibres, lierMembreLibre, getMatches,
+  chercherProfilsNonRevendiques, revendiquerProfil, getEquipesHistoriquesPourJoueur,
 } from "./db.js";
 import { stadeAtteintEquipe } from "./schedule.js";
 import * as Grid from "./grid.js";
@@ -85,6 +86,60 @@ btnSignup.addEventListener("click", async () => {
   }
 });
 
+// ---------- Revendiquer un profil pré-créé (importé sans compte) ----------
+let derniereRechercheRevendication = [];
+
+document.getElementById("j-revendiquer-recherche").addEventListener("input", async (e) => {
+  const val = e.target.value.trim();
+  const zone = document.getElementById("j-revendiquer-resultats");
+  if (!val) {
+    zone.innerHTML = "";
+    derniereRechercheRevendication = [];
+    return;
+  }
+  const resultats = await chercherProfilsNonRevendiques(val);
+  derniereRechercheRevendication = resultats;
+  if (!resultats.length) {
+    zone.innerHTML = `<p class="muted">Aucun profil non revendiqué ne correspond.</p>`;
+    return;
+  }
+  zone.innerHTML = resultats
+    .map(
+      (p, i) => `<div class="card" style="padding:10px;margin-bottom:8px;">
+      <strong>${p.nom}</strong>
+      <div class="grille-form" style="margin-top:6px;">
+        <input type="password" class="j-revendiquer-password" data-index="${i}" placeholder="Choisis un mot de passe pour ce profil" />
+        <button data-revendiquer="${i}">Revendiquer ce profil</button>
+      </div>
+      <p class="muted" data-revendiquer-status="${i}"></p>
+    </div>`
+    )
+    .join("");
+
+  zone.querySelectorAll("[data-revendiquer]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const i = Number(btn.dataset.revendiquer);
+      const profil = derniereRechercheRevendication[i];
+      const passwordInput = zone.querySelector(`.j-revendiquer-password[data-index="${i}"]`);
+      const statusEl = zone.querySelector(`[data-revendiquer-status="${i}"]`);
+      const password = passwordInput.value;
+      if (!password) {
+        statusEl.textContent = "Choisis d'abord un mot de passe.";
+        return;
+      }
+      btn.disabled = true;
+      statusEl.textContent = "Revendication en cours...";
+      const ok = await revendiquerProfil(profil.id, password);
+      if (!ok) {
+        statusEl.textContent = "Ce profil vient d'être revendiqué par quelqu'un d'autre — réessaie avec un autre.";
+        btn.disabled = false;
+        return;
+      }
+      entrerDansApp({ id: profil.id, nom: profil.nom, dispos: profil.dispos || {} });
+    })
+  );
+});
+
 function entrerDansApp(player) {
   currentPlayer = player;
   loginCard.hidden = true;
@@ -104,7 +159,18 @@ let pendingSondageKeys = new Set();
 async function renderMesEquipes() {
   if (!currentPlayer) return;
   const container = document.getElementById("j-mes-equipes");
-  const equipes = await getEquipesForPlayer(currentPlayer.id);
+  const [equipesVivantes, equipesHistoriques] = await Promise.all([
+    getEquipesForPlayer(currentPlayer.id),
+    getEquipesHistoriquesPourJoueur(currentPlayer.id),
+  ]);
+  // Union par id : une équipe rejointe via code ET revendiquée pour un
+  // ancien tournoi ne doit apparaître qu'une fois.
+  const idsVus = new Set();
+  const equipes = [...equipesVivantes, ...equipesHistoriques].filter((e) => {
+    if (idsVus.has(e.id)) return false;
+    idsVus.add(e.id);
+    return true;
+  });
 
   pendingSondageKeys = new Set();
   equipes.forEach((e) => (e.sondagesJoueurs || []).forEach((k) => pendingSondageKeys.add(k)));
