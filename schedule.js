@@ -278,6 +278,30 @@ export function computeQualifiers(classementsParGroupe, nbQualifies, criteres = 
   return qualifies.slice(0, nbQualifies);
 }
 
+// Détermine le stade atteint par une équipe DANS UN tournoi donné, pour un
+// résumé "palmarès" — à partir de tous les matchs de CE tournoi (poules +
+// phase finale). Sert à afficher "Champion", "Finaliste", "Éliminé en
+// demi-finale", ou simplement "Phase de groupes" si pas de phase finale
+// jouée par cette équipe.
+export function stadeAtteintEquipe(equipeId, matchsDuTournoi) {
+  const matchsFinale = matchsDuTournoi.filter(
+    (m) => m.phase !== "poule" && (m.equipeAId === equipeId || m.equipeBId === equipeId)
+  );
+  if (!matchsFinale.length) return { stade: "poules", label: "Phase de groupes" };
+
+  const dernier = matchsFinale.reduce((a, b) => ((b.tourIndex ?? 0) > (a.tourIndex ?? 0) ? b : a));
+  if (!dernier.bye && (dernier.scoreA === null || dernier.scoreA === undefined)) {
+    return { stade: "en_cours", label: `Phase finale en cours (${dernier.phase})` };
+  }
+  const gagne = dernier.bye ? true : dernier.equipeAId === equipeId ? dernier.scoreA > dernier.scoreB : dernier.scoreB > dernier.scoreA;
+  if (dernier.phase === "finale") {
+    return gagne ? { stade: "champion", label: "🏆 Champion" } : { stade: "finaliste", label: "Finaliste" };
+  }
+  return gagne
+    ? { stade: "qualifie", label: `Qualifié(e) après ${dernier.phase} (tour suivant pas encore joué)` }
+    : { stade: "elimine", label: `Éliminé(e) en ${dernier.phase}` };
+}
+
 function nommerPhase(nbEquipes) {
   if (nbEquipes <= 2) return "finale";
   if (nbEquipes <= 4) return "demi-finale";

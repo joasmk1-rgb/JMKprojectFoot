@@ -85,7 +85,7 @@ function renderListeTournois(list) {
         : "Date à confirmer";
       return `
     <button class="tournoi-carte ${t.id === currentTournamentId ? "tournoi-carte-active" : ""}" data-choisir-tournoi="${t.id}">
-      <strong>${t.nom}</strong>
+      <strong>${t.historique ? "🗄 Archivé — " : ""}${t.nom}</strong>
       <span class="muted">${dates} — ${t.statut}${t.inscriptionsOuvertes === false ? " · inscriptions fermées" : ""}</span>
     </button>`;
     })

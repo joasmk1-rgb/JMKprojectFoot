@@ -86,6 +86,31 @@
     </div>
 
     <div class="card">
+      <h2>Arbitrage</h2>
+      <label style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" id="j-arbitre-dispo" style="width:auto;" /> Je suis aussi disponible pour arbitrer des matchs
+      </label>
+      <p class="muted" id="j-arbitre-statut" style="margin-top:6px;"></p>
+
+      <div id="j-arbitre-zone" hidden>
+        <h3 style="margin-top:18px;">Matchs à couvrir (pas encore d'arbitre)</h3>
+        <p class="aide">Tous tournois confondus — choisis un match dans le créneau qui t'arrange, tu t'y assignes toi-même.</p>
+        <div id="j-arbitre-disponibles"><p class="muted">Chargement...</p></div>
+
+        <h3 style="margin-top:18px;">Mes matchs à arbitrer</h3>
+        <div id="j-arbitre-mes-matchs"><p class="muted">Chargement...</p></div>
+      </div>
+    </div>
+
+    <div class="card" id="j-historique-card" hidden>
+      <h2>C'est peut-être toi</h2>
+      <p class="aide">On a trouvé des participations à d'anciens tournois enregistrées sous ton nom, mais pas encore liées à ton compte (souvent issues d'un import). Coche celles qui sont vraiment toi pour les rattacher à ton compte et les voir dans ton palmarès.</p>
+      <div id="j-historique-liste"></div>
+      <button id="j-btn-lier-historique" style="margin-top:10px;">Lier les participations cochées</button>
+      <p class="muted" id="j-historique-result"></p>
+    </div>
+
+    <div class="card">
       <h2>Rejoindre une équipe</h2>
       <p class="aide">Demande à ton capitaine le code de son équipe (6 caractères) et entre-le ici pour rejoindre son effectif.</p>
       <div class="grille-form">

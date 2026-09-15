@@ -2,16 +2,16 @@ import { ADMIN_PASSPHRASE } from "./config.js";
 import {
   createTournament, watchTournaments, getTournament, updateTournament, deleteTournament,
   createChampionnat, watchChampionnats, updateChampionnat, deleteChampionnat, getMatches,
-  watchPlayers, updatePlayer, deletePlayer,
+  watchPlayers, updatePlayer, deletePlayer, getInscriptionsForEquipe,
   createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
-  inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
+  inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe, getInscriptions,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch, updateMatch,
   getAdmins, watchAdmins, createAdmin, deleteAdmin,
 } from "./db.js";
 import {
   computeNbGroups, splitIntoGroups, scheduleMatches, computeStandings,
-  computeQualifiers, generateKnockoutBracket, genererTourSuivant,
+  computeQualifiers, generateKnockoutBracket, genererTourSuivant, stadeAtteintEquipe,
 } from "./schedule.js";
 import * as Grid from "./grid.js";
 
@@ -139,7 +139,7 @@ function init() {
     tournamentsList = list;
     const select = document.getElementById("select-tournament");
     select.innerHTML = list
-      .map((t) => `<option value="${t.id}">${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}</option>`)
+      .map((t) => `<option value="${t.id}">${t.historique ? "🗄 " : ""}${t.nom}${t.dateDebut ? ` — ${formaterDateFr(t.dateDebut)}` : ""}</option>`)
       .join("");
     if (list.length && !currentTournamentId) {
       selectTournament(list[0].id);
@@ -197,6 +197,7 @@ function init() {
         duréePause: Number(document.getElementById("nt-pause").value),
         allerRetour: document.getElementById("nt-allerretour").checked,
         nbQualifiesPhaseFinale: nbQualifiesRaw ? Number(nbQualifiesRaw) : null,
+        historique: document.getElementById("nt-historique").checked,
       });
       document.getElementById("new-tournament-form").hidden = true;
       selectTournament(id);
@@ -224,6 +225,8 @@ function init() {
         duréePause: Number(document.getElementById("tn-pause").value),
         allerRetour: document.getElementById("tn-allerretour").checked,
         nbQualifiesPhaseFinale: nbQualifiesRaw ? Number(nbQualifiesRaw) : null,
+        historique: document.getElementById("tn-historique").checked,
+        inscriptionsOuvertes: document.getElementById("tn-historique").checked ? false : currentTournament.inscriptionsOuvertes,
       });
       currentTournament = await getTournament(currentTournamentId);
       renderTournoiSettings();
@@ -631,23 +634,68 @@ function init() {
         );
       }
 
-      // 1. Équipes : réutilise une équipe existante du hub si le nom
-      // correspond déjà (insensible à la casse), sinon la crée avec un mot
-      // de passe capitaine temporaire à communiquer manuellement — puis
-      // l'inscrit à ce tournoi avec son groupe.
+      // Regroupement par tournoi : si les fichiers ont une colonne "tournoi"
+      // (cas d'un import qui mélange plusieurs anciens tournois d'un coup —
+      // chaque PDF a son propre nom de tournoi), chaque groupe est importé
+      // dans SON tournoi à lui (créé automatiquement, marqué historique, si
+      // aucun tournoi existant ne porte ce nom) plutôt que tout mélanger
+      // dans le tournoi actuellement sélectionné. Une ligne sans colonne
+      // "tournoi" (ou vide) garde l'ancien comportement : le tournoi
+      // actuellement sélectionné en haut de page.
+      function clePourGroupe(row) {
+        const nomTournoiCsv = champCsv(row, "tournoi", "tournoi_nom", "nom du tournoi").trim();
+        return nomTournoiCsv || null; // null = "pas de colonne, utiliser le tournoi sélectionné"
+      }
+      const nomsTournoisPresents = new Set([...rowsEquipes, ...rowsMatchs].map(clePourGroupe));
+
+      // Un seul mot-clé "tournoi" peut apparaître sous plusieurs casses —
+      // on regroupe par nom normalisé pour éviter de créer deux tournois
+      // "Tournoi A" / "tournoi a".
+      const tournoiIdParCle = new Map(); // clé normalisée (ou null) -> tournamentId
+      const tournoisAutoCrees = [];
+      for (const nomTournoiCsv of nomsTournoisPresents) {
+        if (nomTournoiCsv === null) {
+          tournoiIdParCle.set(null, currentTournamentId);
+          continue;
+        }
+        const cle = normaliseNom(nomTournoiCsv);
+        const existant = tournamentsList.find((t) => normaliseNom(t.nom) === cle);
+        if (existant) {
+          tournoiIdParCle.set(cle, existant.id);
+        } else {
+          const id = await createTournament({ nom: nomTournoiCsv, historique: true });
+          tournoiIdParCle.set(cle, id);
+          tournoisAutoCrees.push(nomTournoiCsv);
+        }
+      }
+      function tournamentIdPourRow(row) {
+        const nomTournoiCsv = clePourGroupe(row);
+        return nomTournoiCsv === null ? currentTournamentId : tournoiIdParCle.get(normaliseNom(nomTournoiCsv));
+      }
+
+      // Équipes (globales, réutilisées si le nom correspond déjà) — utilisé
+      // par TOUS les groupes, pour que la même équipe ne soit pas recréée
+      // en double si elle apparaît dans plusieurs des tournois importés.
       const nomVersId = new Map(equipesGlobal.map((e) => [normaliseNom(e.nom), e.id]));
-      // Retient le groupe de chaque équipe déjà connu (import en cours ou
-      // déjà inscrite avant l'import) pour pouvoir le retrouver au moment
-      // des matchs, même si le fichier matchs.csv n'a pas de colonne
-      // "groupe" — sinon un match importé sans groupe ne matche jamais avec
-      // le classement par groupe (qui, lui, se base sur les équipes) et le
-      // classement reste vide en permanence, comme s'il n'était rattaché à
-      // aucun tournoi.
-      const equipeIdVersGroupe = new Map(teams.filter((t) => t.groupe).map((t) => [t.id, t.groupe]));
       const nouveauxMotsDePasse = [];
+
+      // 1. Équipes + inscription + groupe, tournoi par tournoi.
+      const inscriptionsExistantesParTournoi = new Map(); // tournamentId -> Set(equipeId déjà inscrites)
+      const equipeIdVersGroupeParTournoi = new Map(); // tournamentId -> Map(equipeId -> groupe)
+      async function inscriptionsDe(tournamentId) {
+        if (!inscriptionsExistantesParTournoi.has(tournamentId)) {
+          const insc = tournamentId === currentTournamentId ? teams.map((t) => ({ equipeId: t.id, groupe: t.groupe })) : await getInscriptions(tournamentId);
+          inscriptionsExistantesParTournoi.set(tournamentId, new Set(insc.map((i) => i.equipeId || i.id)));
+          equipeIdVersGroupeParTournoi.set(tournamentId, new Map(insc.filter((i) => i.groupe).map((i) => [i.equipeId || i.id, i.groupe])));
+        }
+        return inscriptionsExistantesParTournoi.get(tournamentId);
+      }
+
       for (const row of rowsEquipes) {
         const nom = champCsv(row, "nom").trim();
         if (!nom) continue;
+        const tournamentId = tournamentIdPourRow(row);
+        if (!tournamentId) continue;
         const cle = normaliseNom(nom);
         let equipeId = nomVersId.get(cle);
         if (!equipeId) {
@@ -656,23 +704,22 @@ function init() {
           nomVersId.set(cle, equipeId);
           nouveauxMotsDePasse.push(`${nom} → ${motDePasse}`);
         }
-        const dejaInscrite = teams.some((t) => t.id === equipeId);
-        if (!dejaInscrite) await inscrireEquipe(currentTournamentId, equipeId);
+        const dejaInscrites = await inscriptionsDe(tournamentId);
+        if (!dejaInscrites.has(equipeId)) {
+          await inscrireEquipe(tournamentId, equipeId);
+          dejaInscrites.add(equipeId);
+        }
         const groupeCsv = champCsv(row, "groupe").trim();
         if (groupeCsv) {
-          await updateInscription(currentTournamentId, equipeId, { groupe: groupeCsv });
-          equipeIdVersGroupe.set(equipeId, groupeCsv);
+          await updateInscription(tournamentId, equipeId, { groupe: groupeCsv });
+          equipeIdVersGroupeParTournoi.get(tournamentId).set(equipeId, groupeCsv);
         }
       }
 
       // 2. Membres : ajoutés en "libre" (sans compte), en évitant les
-      // doublons si le même import est relancé deux fois.
+      // doublons si le même import est relancé deux fois — indépendant du
+      // tournoi (un membre appartient à l'équipe globale, pas à un tournoi).
       let nbMembresAjoutes = 0;
-      const equipesFraiches = rowsMembres.length ? await Promise.all(
-        [...new Set(rowsMembres.map((r) => normaliseNom(r.equipe || "")))]
-          .filter((cle) => nomVersId.has(cle))
-          .map((cle) => nomVersId.get(cle))
-      ) : [];
       for (const row of rowsMembres) {
         const cleEquipe = normaliseNom(champCsv(row, "equipe"));
         const nomMembre = champCsv(row, "nom").trim();
@@ -687,13 +734,16 @@ function init() {
         nbMembresAjoutes++;
       }
 
-      // 3. Matchs : créés directement avec les horaires du fichier (pas de
-      // recalcul via le générateur auto). Le terrain vient de la colonne
-      // "terrain" du CSV si présente, sinon du champ texte de secours.
+      // 3. Matchs, tournoi par tournoi — créés directement avec les horaires
+      // du fichier (pas de recalcul via le générateur auto). Le terrain
+      // vient de la colonne "terrain" du CSV si présente, sinon du champ
+      // texte de secours.
       const terrainParDefaut = document.getElementById("imp-terrain-defaut").value.trim();
       const nomsIntrouvables = new Set();
-      const matchsCandidats = [];
+      const matchsCandidatsParTournoi = new Map(); // tournamentId -> [matchs]
       for (const row of rowsMatchs) {
+        const tournamentId = tournamentIdPourRow(row);
+        if (!tournamentId) continue;
         const nomEquipeA = champCsv(row, "equipeA", "equipe a", "equipea");
         const nomEquipeB = champCsv(row, "equipeB", "equipe b", "equipeb");
         const idA = nomVersId.get(normaliseNom(nomEquipeA));
@@ -701,13 +751,11 @@ function init() {
         if (!idA) nomsIntrouvables.add(nomEquipeA || "(colonne équipeA vide)");
         if (!idB) nomsIntrouvables.add(nomEquipeB || "(colonne équipeB vide)");
         if (!idA || !idB) continue;
-        // Si le CSV des matchs n'a pas de colonne "groupe" (ou qu'elle est
-        // vide pour cette ligne), on retombe sur le groupe déjà connu de
-        // l'équipe A (déduit du fichier équipes ou d'une inscription
-        // existante) — indispensable pour que le classement par groupe
-        // retrouve ensuite ce match.
+        await inscriptionsDe(tournamentId); // s'assure que equipeIdVersGroupeParTournoi est peuplé
         const groupeCsvMatch = champCsv(row, "groupe").trim();
-        matchsCandidats.push({
+        const equipeIdVersGroupe = equipeIdVersGroupeParTournoi.get(tournamentId);
+        if (!matchsCandidatsParTournoi.has(tournamentId)) matchsCandidatsParTournoi.set(tournamentId, []);
+        matchsCandidatsParTournoi.get(tournamentId).push({
           equipeAId: idA,
           equipeBId: idB,
           groupe: groupeCsvMatch || equipeIdVersGroupe.get(idA) || equipeIdVersGroupe.get(idB) || null,
@@ -719,54 +767,61 @@ function init() {
       }
 
       // Détection de doublons : même paire d'équipes (peu importe l'ordre)
-      // + même date + même heure, comparé aux matchs déjà présents dans ce
-      // tournoi ET entre les lignes du fichier lui-même (ré-import du même
-      // CSV, ou fichier qui contient déjà deux fois la même ligne).
+      // + même date + même heure, comparé aux matchs déjà présents DANS LE
+      // MÊME tournoi ET entre les lignes du fichier lui-même.
       function signatureMatch(m) {
         return [m.equipeAId, m.equipeBId].sort().join("|") + "|" + (m.date || "") + "|" + (m.heure || "");
       }
-      const matchsExistantsParSignature = new Map(matches.map((m) => [signatureMatch(m), m]));
-      const matchsAImporter = [];
-      const doublonsDetectes = [];
-      const signaturesVues = new Set(matchsExistantsParSignature.keys());
-      // Répare aussi les matchs déjà importés précédemment (avant ce
-      // correctif) dont le groupe est resté vide — sinon ils restent
-      // coincés hors de tout classement même après un ré-import.
+      let nbMatchsImportes = 0;
+      let nbMatchsIgnores = 0;
       let nbGroupesRepares = 0;
-      for (const m of matchsCandidats) {
-        const sig = signatureMatch(m);
-        if (signaturesVues.has(sig)) {
-          doublonsDetectes.push(m);
-          const existant = matchsExistantsParSignature.get(sig);
-          if (existant && !existant.groupe && m.groupe) {
-            await updateMatch(currentTournamentId, existant.id, { groupe: m.groupe });
-            nbGroupesRepares++;
+      for (const [tournamentId, matchsCandidats] of matchsCandidatsParTournoi) {
+        const matchsExistants = tournamentId === currentTournamentId ? matches : await getMatches(tournamentId);
+        const matchsExistantsParSignature = new Map(matchsExistants.map((m) => [signatureMatch(m), m]));
+        const matchsAImporter = [];
+        const doublonsDetectes = [];
+        const signaturesVues = new Set(matchsExistantsParSignature.keys());
+        for (const m of matchsCandidats) {
+          const sig = signatureMatch(m);
+          if (signaturesVues.has(sig)) {
+            doublonsDetectes.push(m);
+            const existant = matchsExistantsParSignature.get(sig);
+            if (existant && !existant.groupe && m.groupe) {
+              await updateMatch(tournamentId, existant.id, { groupe: m.groupe });
+              nbGroupesRepares++;
+            }
+          } else {
+            signaturesVues.add(sig);
+            matchsAImporter.push(m);
           }
-        } else {
-          signaturesVues.add(sig);
-          matchsAImporter.push(m);
         }
-      }
 
-      let matchsFinal = matchsAImporter;
-      if (doublonsDetectes.length) {
-        const detail = doublonsDetectes
-          .map((m) => `${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}${m.date ? " — " + m.date : ""}${m.heure ? " " + m.heure : ""}`)
-          .join("\n");
-        const ignorerDoublons = confirm(
-          `⚠️ ${doublonsDetectes.length} doublon(s) détecté(s) (même équipes + même date/heure qu'un match déjà présent, ou répété dans le fichier) :\n\n${detail}\n\nOK = ignorer ces doublons et importer seulement les nouveaux matchs.\nAnnuler = les importer quand même (créera des matchs en double).`
-        );
-        if (!ignorerDoublons) matchsFinal = matchsCandidats; // l'utilisateur veut tout importer, doublons compris
-      }
+        let matchsFinal = matchsAImporter;
+        if (doublonsDetectes.length) {
+          const nomTournoiAffiche = tournamentId === currentTournamentId ? currentTournament.nom : tournamentsList.find((t) => t.id === tournamentId)?.nom || tournamentId;
+          const detail = doublonsDetectes
+            .map((m) => `${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}${m.date ? " — " + m.date : ""}${m.heure ? " " + m.heure : ""}`)
+            .join("\n");
+          const ignorerDoublons = confirm(
+            `⚠️ [${nomTournoiAffiche}] ${doublonsDetectes.length} doublon(s) détecté(s) (même équipes + même date/heure qu'un match déjà présent, ou répété dans le fichier) :\n\n${detail}\n\nOK = ignorer ces doublons et importer seulement les nouveaux matchs.\nAnnuler = les importer quand même (créera des matchs en double).`
+          );
+          if (!ignorerDoublons) matchsFinal = matchsCandidats;
+        }
 
-      if (matchsFinal.length) await saveMatches(currentTournamentId, matchsFinal);
+        if (matchsFinal.length) await saveMatches(tournamentId, matchsFinal);
+        nbMatchsImportes += matchsFinal.length;
+        nbMatchsIgnores += matchsCandidats.length - matchsFinal.length;
+      }
 
       const lignes = [
         ...rapportDetection,
         `${rowsEquipes.length} équipe(s) traitée(s) dans le fichier équipes.`,
         `${nbMembresAjoutes} membre(s) ajouté(s).`,
-        `${matchsFinal.length} match(s) importé(s)${rowsMatchs.length > matchsFinal.length ? ` (${rowsMatchs.length - matchsFinal.length} ignoré(s) : ${nomsIntrouvables.size ? "équipe introuvable et/ou " : ""}doublon détecté)` : ""}.`,
+        `${nbMatchsImportes} match(s) importé(s)${nbMatchsIgnores ? ` (${nbMatchsIgnores} ignoré(s) : ${nomsIntrouvables.size ? "équipe introuvable et/ou " : ""}doublon détecté)` : ""}.`,
       ];
+      if (tournoisAutoCrees.length) {
+        lignes.push(`🗄 Tournoi(s) créé(s) automatiquement (marqués historique, réglages par défaut à ajuster dans l'onglet Tournoi si besoin) : ${tournoisAutoCrees.join(", ")}.`);
+      }
       if (nouveauxMotsDePasse.length) {
         lignes.push(`Nouvelles équipes créées avec mot de passe temporaire à communiquer au capitaine :`);
         lignes.push(...nouveauxMotsDePasse);
@@ -775,7 +830,7 @@ function init() {
         lignes.push(`⚠️ Noms d'équipe introuvables dans le fichier matchs (vérifie l'orthographe vs le fichier équipes) : ${[...nomsIntrouvables].join(", ")}`);
       }
       if (nbGroupesRepares) {
-        lignes.push(`🔧 ${nbGroupesRepares} match(s) déjà importé(s) précédemment avaient un groupe manquant (bug corrigé) — réparé(s), ils apparaîtront maintenant dans le classement.`);
+        lignes.push(`🔧 ${nbGroupesRepares} match(s) déjà importé(s) précédemment avaient un groupe manquant — réparé(s).`);
       }
       resultEl.innerHTML = lignes.map((l) => `<div>${l}</div>`).join("");
     } catch (e) {
@@ -980,11 +1035,12 @@ function renderTournoiSettings() {
   document.getElementById("tn-pause").value = t.duréePause ?? "";
   document.getElementById("tn-allerretour").checked = !!t.allerRetour;
   document.getElementById("tn-nbqualifies").value = t.nbQualifiesPhaseFinale ?? "";
+  document.getElementById("tn-historique").checked = !!t.historique;
 
   const nbEquipesConfirmees = teams.filter((e) => e.statut === "confirmée").length;
   const nbTerrains = venues.length;
   document.getElementById("tn-resume").innerHTML = `
-    ${teams.length} équipe(s) inscrite(s) (${nbEquipesConfirmees} confirmée(s)) — détail et actions dans l'onglet Équipes.<br/>
+    ${t.historique ? `<span class="badge forfait">Historique</span> ` : ""}${teams.length} équipe(s) inscrite(s) (${nbEquipesConfirmees} confirmée(s)) — détail et actions dans l'onglet Équipes.<br/>
     ${nbTerrains} terrain(s) alloué(s) à ce tournoi — à gérer dans l'onglet Terrains.<br/>
     Inscriptions publiques : ${t.inscriptionsOuvertes !== false ? "ouvertes" : "fermées"} (case à cocher en haut de page).
   `;
@@ -1222,6 +1278,8 @@ function renderComposition(equipeId) {
       </table>`
           : `<p class="muted">Aucun joueur enregistré pour cette équipe pour l'instant.</p>`
       }
+      <button class="secondaire" id="btn-voir-palmares" style="margin-top:10px;">Voir le palmarès</button>
+      <div id="palmares-zone" style="margin-top:10px;"></div>
       <button class="secondaire" id="btn-fermer-composition" style="margin-top:10px;">Fermer</button>
     </div>`;
 
@@ -1232,6 +1290,30 @@ function renderComposition(equipeId) {
     })
   );
   document.getElementById("btn-fermer-composition").addEventListener("click", () => toggleComposition(equipeId));
+  document.getElementById("btn-voir-palmares").addEventListener("click", () => afficherPalmares(equipeId));
+}
+
+// Résumé par tournoi : pour chaque tournoi où l'équipe a une inscription,
+// le stade atteint (poules, éliminé en demi, finaliste, champion...) —
+// calculé à la demande (pas de cache), pour rester correct même après un
+// nouveau résultat encodé ailleurs.
+async function afficherPalmares(equipeId) {
+  const zone = document.getElementById("palmares-zone");
+  if (!zone) return;
+  zone.innerHTML = `<p class="muted">Calcul en cours...</p>`;
+  const inscriptionsEquipe = await getInscriptionsForEquipe(equipeId);
+  if (!inscriptionsEquipe.length) {
+    zone.innerHTML = `<p class="muted">Cette équipe n'est inscrite à aucun tournoi pour l'instant.</p>`;
+    return;
+  }
+  const lignes = await Promise.all(
+    inscriptionsEquipe.map(async (insc) => {
+      const matchsDuTournoi = insc.tournamentId === currentTournamentId ? matches : await getMatches(insc.tournamentId);
+      const { label } = stadeAtteintEquipe(equipeId, matchsDuTournoi);
+      return `<p>🏆 <strong>${insc.tournamentNom}</strong> — ${label}</p>`;
+    })
+  );
+  zone.innerHTML = lignes.join("");
 }
 
 // Liste des équipes globales PAS ENCORE inscrites à ce tournoi, avec un
@@ -1334,7 +1416,7 @@ function renderResultsForm() {
       return `
     <div class="card" style="margin-bottom:10px;">
       <strong>${teamName(m.equipeAId)} vs ${teamName(m.equipeBId)}</strong>
-      <span class="muted"> — ${m.phase === "poule" ? m.groupe : m.phase} — ${m.date || ""} ${m.heure || ""} — ${m.terrain || ""}</span>
+      <span class="muted"> — ${m.phase === "poule" ? m.groupe : m.phase} — ${m.date || ""} ${m.heure || ""} — ${m.terrain || ""}${m.arbitreId ? ` — arbitre : ${joueursGlobal.find((j) => j.id === m.arbitreId)?.nom || "?"}` : ""}</span>
       <div class="grille-form" style="margin-top:8px;">
         <input type="number" min="0" placeholder="Score ${teamName(m.equipeAId)}" data-score-a="${m.id}" value="${m.scoreA ?? ""}" />
         <input type="number" min="0" placeholder="Score ${teamName(m.equipeBId)}" data-score-b="${m.id}" value="${m.scoreB ?? ""}" />
@@ -1793,6 +1875,15 @@ function renderJoueurs() {
       <td><input data-renommer-joueur="${j.id}" value="${j.nom}" style="width:100%;" /></td>
       <td>${equipesLiees.length ? equipesLiees.map((e) => e.nom).join(", ") : `<span class="muted">aucune</span>`}</td>
       <td>
+        ${
+          !j.disponiblePourArbitrer
+            ? `<span class="muted">non intéressé(e)</span>`
+            : j.arbitreValide
+            ? `<span class="badge acte">Validé</span> <button data-revoquer-arbitre="${j.id}" class="secondaire">Révoquer</button>`
+            : `<span class="badge propose">En attente</span> <button data-valider-arbitre="${j.id}">Valider</button>`
+        }
+      </td>
+      <td>
         <button data-reset-password-joueur="${j.id}" class="secondaire">Réinitialiser mot de passe</button>
         <button data-supprimer-joueur="${j.id}" class="danger">Supprimer</button>
       </td>
@@ -1816,6 +1907,16 @@ function renderJoueurs() {
     btn.addEventListener("click", () => {
       if (confirm("Supprimer ce compte joueur ? Il sera aussi retiré des équipes où il était lié (redevient un joueur \"libre\" pour elles, ou disparaît de la liste — l'équipe elle-même n'est pas touchée).")) {
         supprimerJoueur(btn.dataset.supprimerJoueur);
+      }
+    })
+  );
+  tbody.querySelectorAll("[data-valider-arbitre]").forEach((btn) =>
+    btn.addEventListener("click", () => updatePlayer(btn.dataset.validerArbitre, { arbitreValide: true }))
+  );
+  tbody.querySelectorAll("[data-revoquer-arbitre]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (confirm("Révoquer le statut d'arbitre validé de ce joueur ?")) {
+        updatePlayer(btn.dataset.revoquerArbitre, { arbitreValide: false });
       }
     })
   );

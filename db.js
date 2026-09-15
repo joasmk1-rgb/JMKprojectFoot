@@ -27,6 +27,7 @@ import {
   orderBy,
   onSnapshot,
   serverTimestamp,
+  collectionGroup,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { marksToCreneaux } from "./grid.js";
@@ -117,6 +118,26 @@ export async function deletePlayer(playerId) {
   await deleteDoc(doc(db, "joueurs", playerId));
 }
 
+// ---------- ARBITRAGE (extension du compte joueur, pas un compte à part) ----------
+// Un joueur coche "je suis dispo pour arbitrer" (disponiblePourArbitrer),
+// l'admin valide (arbitreValide) avant qu'il n'ait accès à quoi que ce soit
+// — évite qu'un compte fraîchement créé s'attribue des matchs sans contrôle.
+// Une fois validé, il voit tous les matchs planifiés (date connue) sans
+// arbitre assigné, toutes équipes/tournois confondus (collectionGroup), et
+// peut s'y assigner lui-même.
+
+export async function getMatchsArbitrablesDisponibles() {
+  const snap = await getDocs(query(collectionGroup(db, "matches"), where("arbitreId", "==", null)));
+  return snap.docs
+    .map((d) => ({ id: d.id, tournamentId: d.ref.parent.parent.id, ...d.data() }))
+    .filter((m) => m.date && m.heure && !m.bye); // seulement les matchs déjà planifiés, un vrai match (pas un bye)
+}
+
+export async function getMesMatchsArbitre(joueurId) {
+  const snap = await getDocs(query(collectionGroup(db, "matches"), where("arbitreId", "==", joueurId)));
+  return snap.docs.map((d) => ({ id: d.id, tournamentId: d.ref.parent.parent.id, ...d.data() }));
+}
+
 export async function getPlayersByIds(ids) {
   const uniques = [...new Set(ids)];
   const resultats = await Promise.all(uniques.map((id) => getPlayer(id)));
@@ -157,6 +178,43 @@ export function watchEquipes(callback) {
 export async function getEquipes() {
   const snap = await getDocs(collection(db, "equipes"));
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+// Recherche, dans TOUTES les équipes du hub, les membres "libres" (sans
+// compte — typiquement issus d'un import CSV d'un ancien tournoi) dont le
+// nom correspond exactement (insensible à la casse/accents) à celui donné
+// — sert à proposer à un joueur de relier son compte à son historique.
+function normaliseNomSimple(nom) {
+  return (nom || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+export async function trouverParticipationsLibres(nom) {
+  const cible = normaliseNomSimple(nom);
+  if (!cible) return [];
+  const equipes = await getEquipes();
+  const resultats = [];
+  for (const e of equipes) {
+    (e.membres || []).forEach((m, index) => {
+      if (m.type === "libre" && normaliseNomSimple(m.nom) === cible) {
+        resultats.push({ equipeId: e.id, equipeNom: e.nom, index, nomMembre: m.nom });
+      }
+    });
+  }
+  return resultats;
+}
+
+export async function lierMembreLibre(equipeId, index, joueur) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const membres = [...(snap.data().membres || [])];
+  if (!membres[index] || membres[index].type !== "libre") return; // a changé entre-temps, on n'écrase rien
+  membres[index] = { type: "compte", joueurId: joueur.id, nom: membres[index].nom };
+  await updateDoc(ref, { membres });
 }
 
 export async function getEquipe(equipeId) {
@@ -297,11 +355,12 @@ export async function createTournament(data) {
     statut: "préparation", // préparation | en_cours | terminé
     dateDebut: data.dateDebut || null, // date du tournoi (ou premier jour si plusieurs) — affichée sur la page publique
     dateFin: data.dateFin || null, // optionnel, si le tournoi s'étale sur plusieurs jours
-    inscriptionsOuvertes: data.inscriptionsOuvertes !== false, // permet de fermer les inscriptions publiques sans supprimer le tournoi
-    tailleGroupeVisee: data.tailleGroupeVisee, // ex: 4 -> le nb de groupes se recalcule tout seul selon le nb réel d'équipes inscrites
-    nbMiTemps: data.nbMiTemps,
-    dureeMiTemps: data.dureeMiTemps,
-    duréePause: data.duréePause,
+    inscriptionsOuvertes: data.historique ? false : data.inscriptionsOuvertes !== false, // permet de fermer les inscriptions publiques sans supprimer le tournoi
+    historique: data.historique || false, // tournoi déjà joué (importé depuis un ancien document) plutôt qu'un tournoi en cours/à venir
+    tailleGroupeVisee: data.tailleGroupeVisee || 4, // ex: 4 -> le nb de groupes se recalcule tout seul selon le nb réel d'équipes inscrites
+    nbMiTemps: data.nbMiTemps || 2,
+    dureeMiTemps: data.dureeMiTemps || 10,
+    duréePause: data.duréePause || 5,
     allerRetour: data.allerRetour || false,
     nbQualifiesPhaseFinale: data.nbQualifiesPhaseFinale || null, // null = pas de phase finale prévue
     terrainIds: [], // terrains (globaux) utilisés par ce tournoi
@@ -435,6 +494,7 @@ export async function saveMatches(tournamentId, matches) {
       scoreA: null,
       scoreB: null,
       evenements: [], // { type: "but"|"carton_jaune"|"carton_rouge", equipe, joueur?, minute?, motif? }
+      arbitreId: null, // joueur (compte) qui s'est assigné pour arbitrer ce match
       ...m,
       createdAt: serverTimestamp(),
     });
@@ -448,6 +508,11 @@ export async function clearMatches(tournamentId) {
   for (const d of snap.docs) {
     await deleteDoc(d.ref);
   }
+}
+
+export async function getInscriptions(tournamentId) {
+  const snap = await getDocs(collection(db, "tournaments", tournamentId, "inscriptions"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
 export async function getMatches(tournamentId) {

@@ -1,7 +1,10 @@
 import {
-  createPlayer, findPlayerByPassword, setPlayerAvailability,
+  createPlayer, findPlayerByPassword, setPlayerAvailability, updatePlayer,
   findEquipeByCode, addEquipeMember, getEquipesForPlayer, getInscriptionsForEquipe,
+  getMatchsArbitrablesDisponibles, getMesMatchsArbitre, updateMatch, setMatchResult,
+  getTournament, getEquipe, trouverParticipationsLibres, lierMembreLibre, getMatches,
 } from "./db.js";
+import { stadeAtteintEquipe } from "./schedule.js";
 import * as Grid from "./grid.js";
 
 // ===================== COMPTE JOUEUR (fondation du hub) =====================
@@ -91,6 +94,8 @@ function entrerDansApp(player) {
   dispoMarks = { ...(player.dispos || {}) };
   renderDispoGrid();
   renderMesEquipes();
+  renderArbitreStatut();
+  renderHistoriqueProposes();
 }
 
 // ===================== ÉQUIPES DU JOUEUR =====================
@@ -112,19 +117,73 @@ async function renderMesEquipes() {
   }
 
   // Une équipe est désormais globale (pas liée à un seul tournoi) — on
-  // affiche ses inscriptions actuelles (à quel(s) tournoi(s) elle participe).
+  // affiche ses inscriptions actuelles (à quel(s) tournoi(s) elle participe)
+  // ainsi qu'un mini palmarès (stade atteint à chaque tournoi joué).
   const parEquipe = await Promise.all(
     equipes.map(async (e) => ({ equipe: e, inscriptions: await getInscriptionsForEquipe(e.id) }))
   );
-  container.innerHTML = parEquipe
-    .map(({ equipe, inscriptions }) => {
-      const tournois = inscriptions.length
-        ? inscriptions.map((i) => i.tournamentNom).join(", ")
-        : "aucun tournoi pour l'instant";
-      return `<p><strong>${equipe.nom}</strong> <span class="muted">— ${tournois}</span></p>`;
+  const blocs = await Promise.all(
+    parEquipe.map(async ({ equipe, inscriptions }) => {
+      if (!inscriptions.length) {
+        return `<p><strong>${equipe.nom}</strong> <span class="muted">— aucun tournoi pour l'instant</span></p>`;
+      }
+      const lignesPalmares = await Promise.all(
+        inscriptions.map(async (insc) => {
+          const matchsDuTournoi = await getMatches(insc.tournamentId);
+          const { label } = stadeAtteintEquipe(equipe.id, matchsDuTournoi);
+          return `${insc.tournamentNom} (${label})`;
+        })
+      );
+      return `<p><strong>${equipe.nom}</strong> <span class="muted">— ${lignesPalmares.join(", ")}</span></p>`;
     })
+  );
+  container.innerHTML = blocs.join("");
+}
+
+// ===================== HISTORIQUE : lier son compte à ses anciennes =====================
+// participations (membres "libres" enregistrés sous le même nom, issus
+// typiquement d'un import CSV d'un ancien tournoi, jamais liés à un compte).
+let participationsProposees = [];
+
+async function renderHistoriqueProposes() {
+  if (!currentPlayer) return;
+  const card = document.getElementById("j-historique-card");
+  const found = await trouverParticipationsLibres(currentPlayer.nom);
+  // Ne propose que ce qui n'est pas déjà lié à CE compte (au cas où on
+  // rappelle cette fonction après un lien déjà fait) — trouverParticipationsLibres
+  // ne renvoie de toute façon que des membres encore "libre".
+  participationsProposees = found;
+  if (!found.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  document.getElementById("j-historique-liste").innerHTML = found
+    .map(
+      (p, i) => `<label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <input type="checkbox" class="j-historique-check" value="${i}" style="width:auto;" checked /> ${p.equipeNom} <span class="muted">(enregistré comme "${p.nomMembre}")</span>
+    </label>`
+    )
     .join("");
 }
+
+document.getElementById("j-btn-lier-historique").addEventListener("click", async () => {
+  if (!currentPlayer) return;
+  const resultEl = document.getElementById("j-historique-result");
+  const indices = [...document.querySelectorAll(".j-historique-check:checked")].map((cb) => Number(cb.value));
+  if (!indices.length) {
+    resultEl.textContent = "Aucune participation cochée.";
+    return;
+  }
+  resultEl.textContent = "Liaison en cours...";
+  for (const i of indices) {
+    const p = participationsProposees[i];
+    await lierMembreLibre(p.equipeId, p.index, currentPlayer);
+  }
+  resultEl.textContent = `${indices.length} participation(s) liée(s) à ton compte ✓`;
+  renderMesEquipes();
+  renderHistoriqueProposes();
+});
 
 function updateSondageBanner() {
   const banner = document.getElementById("j-sondage-banner");
@@ -167,6 +226,161 @@ document.getElementById("j-btn-rejoindre").addEventListener("click", async () =>
     console.error(e);
   }
 });
+
+// ===================== ARBITRAGE =====================
+// Extension du compte joueur, pas un compte à part : le joueur se déclare
+// dispo pour arbitrer, l'admin valide, puis il voit les matchs planifiés
+// sans arbitre (tous tournois confondus) et peut s'y assigner ; une fois
+// assigné, il passe en "mode match" pour encoder score et cartons pendant
+// le match — les mêmes champs qu'utilise l'admin (setMatchResult).
+const tournoiNomCache = new Map();
+const equipeNomCache = new Map();
+
+async function nomTournoi(id) {
+  if (!tournoiNomCache.has(id)) tournoiNomCache.set(id, (await getTournament(id))?.nom || "(tournoi supprimé)");
+  return tournoiNomCache.get(id);
+}
+async function nomEquipe(id) {
+  if (!id) return "?";
+  if (!equipeNomCache.has(id)) equipeNomCache.set(id, (await getEquipe(id))?.nom || "?");
+  return equipeNomCache.get(id);
+}
+
+document.getElementById("j-arbitre-dispo").addEventListener("change", async (e) => {
+  if (!currentPlayer) return;
+  await updatePlayer(currentPlayer.id, { disponiblePourArbitrer: e.target.checked });
+  currentPlayer.disponiblePourArbitrer = e.target.checked;
+  renderArbitreStatut();
+});
+
+function renderArbitreStatut() {
+  if (!currentPlayer) return;
+  document.getElementById("j-arbitre-dispo").checked = !!currentPlayer.disponiblePourArbitrer;
+  const statutEl = document.getElementById("j-arbitre-statut");
+  const zone = document.getElementById("j-arbitre-zone");
+  if (!currentPlayer.disponiblePourArbitrer) {
+    statutEl.textContent = "";
+    zone.hidden = true;
+  } else if (!currentPlayer.arbitreValide) {
+    statutEl.textContent = "En attente de validation par un organisateur avant d'avoir accès aux matchs à arbitrer.";
+    zone.hidden = true;
+  } else {
+    statutEl.textContent = "✅ Validé comme arbitre.";
+    zone.hidden = false;
+    renderMatchsArbitrablesDisponibles();
+    renderMesMatchsArbitre();
+  }
+}
+
+async function renderMatchsArbitrablesDisponibles() {
+  const container = document.getElementById("j-arbitre-disponibles");
+  container.innerHTML = `<p class="muted">Chargement...</p>`;
+  const matchs = await getMatchsArbitrablesDisponibles();
+  if (!matchs.length) {
+    container.innerHTML = `<p class="muted">Aucun match planifié sans arbitre pour l'instant.</p>`;
+    return;
+  }
+  matchs.sort((a, b) => (a.date + a.heure).localeCompare(b.date + b.heure));
+  const lignes = await Promise.all(
+    matchs.map(async (m) => {
+      const [tournoi, nomA, nomB] = await Promise.all([nomTournoi(m.tournamentId), nomEquipe(m.equipeAId), nomEquipe(m.equipeBId)]);
+      return `<div class="card" style="margin-bottom:8px;">
+        <strong>${nomA} vs ${nomB}</strong> <span class="muted">— ${tournoi}</span><br/>
+        <span class="muted">${m.date} ${m.heure} — ${m.terrain || "terrain à préciser"}</span><br/>
+        <button data-sassigner="${m.tournamentId}|${m.id}" style="margin-top:6px;">M'assigner comme arbitre</button>
+      </div>`;
+    })
+  );
+  container.innerHTML = lignes.join("");
+  container.querySelectorAll("[data-sassigner]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const [tournamentId, matchId] = btn.dataset.sassigner.split("|");
+      await updateMatch(tournamentId, matchId, { arbitreId: currentPlayer.id });
+      renderMatchsArbitrablesDisponibles();
+      renderMesMatchsArbitre();
+    })
+  );
+}
+
+async function renderMesMatchsArbitre() {
+  const container = document.getElementById("j-arbitre-mes-matchs");
+  container.innerHTML = `<p class="muted">Chargement...</p>`;
+  const matchs = await getMesMatchsArbitre(currentPlayer.id);
+  if (!matchs.length) {
+    container.innerHTML = `<p class="muted">Aucun match qui t'est assigné pour l'instant.</p>`;
+    return;
+  }
+  matchs.sort((a, b) => (a.date + a.heure).localeCompare(b.date + b.heure));
+  const lignes = await Promise.all(
+    matchs.map(async (m) => {
+      const [tournoi, nomA, nomB] = await Promise.all([nomTournoi(m.tournamentId), nomEquipe(m.equipeAId), nomEquipe(m.equipeBId)]);
+      const dejaJoue = m.scoreA !== null && m.scoreA !== undefined;
+      return `<div class="card" style="margin-bottom:8px;">
+        <strong>${nomA} vs ${nomB}</strong> <span class="muted">— ${tournoi}</span><br/>
+        <span class="muted">${m.date} ${m.heure || ""} — ${m.terrain || ""}</span>
+        ${dejaJoue ? `<p class="muted">Résultat déjà encodé : ${m.scoreA} - ${m.scoreB}</p>` : ""}
+        <button data-mode-match="${m.tournamentId}|${m.id}" class="${dejaJoue ? "secondaire" : ""}" style="margin-top:6px;">
+          ${dejaJoue ? "Modifier le résultat" : "Passer en mode match"}
+        </button>
+        <div data-zone-mode-match="${m.tournamentId}|${m.id}"></div>
+      </div>`;
+    })
+  );
+  container.innerHTML = lignes.join("");
+  container.querySelectorAll("[data-mode-match]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const cle = btn.dataset.modeMatch;
+      const [tournamentId, matchId] = cle.split("|");
+      const m = matchs.find((mm) => mm.tournamentId === tournamentId && mm.id === matchId);
+      afficherModeMatch(cle, m);
+    })
+  );
+}
+
+async function afficherModeMatch(cle, m) {
+  const zone = document.querySelector(`[data-zone-mode-match="${cle}"]`);
+  if (!zone) return;
+  const nomA = await nomEquipe(m.equipeAId);
+  const nomB = await nomEquipe(m.equipeBId);
+  zone.innerHTML = `
+    <div class="grille-form" style="margin-top:8px;">
+      <input type="number" min="0" placeholder="Score ${nomA}" id="am-score-a" value="${m.scoreA ?? ""}" />
+      <input type="number" min="0" placeholder="Score ${nomB}" id="am-score-b" value="${m.scoreB ?? ""}" />
+      <select id="am-statut">
+        <option value="joué" ${m.statutMatch === "joué" ? "selected" : ""}>Joué</option>
+        <option value="interrompu" ${m.statutMatch === "interrompu" ? "selected" : ""}>Interrompu</option>
+        <option value="forfait" ${m.statutMatch === "forfait" ? "selected" : ""}>Forfait</option>
+      </select>
+    </div>
+    <p class="muted" style="margin:6px 0 2px;">Cartons :</p>
+    <div class="grille-form">
+      <input type="number" min="0" placeholder="🟨 ${nomA}" id="am-jaunes-a" value="0" />
+      <input type="number" min="0" placeholder="🟥 ${nomA}" id="am-rouges-a" value="0" />
+      <input type="number" min="0" placeholder="🟨 ${nomB}" id="am-jaunes-b" value="0" />
+      <input type="number" min="0" placeholder="🟥 ${nomB}" id="am-rouges-b" value="0" />
+    </div>
+    <button id="am-btn-enregistrer" style="margin-top:8px;">Enregistrer le résultat</button>
+    <p class="muted" id="am-result"></p>
+  `;
+  document.getElementById("am-btn-enregistrer").addEventListener("click", async () => {
+    const scoreA = Number(document.getElementById("am-score-a").value);
+    const scoreB = Number(document.getElementById("am-score-b").value);
+    const statutMatch = document.getElementById("am-statut").value;
+    const jaunesA = Number(document.getElementById("am-jaunes-a").value) || 0;
+    const rougesA = Number(document.getElementById("am-rouges-a").value) || 0;
+    const jaunesB = Number(document.getElementById("am-jaunes-b").value) || 0;
+    const rougesB = Number(document.getElementById("am-rouges-b").value) || 0;
+    const evenements = [
+      ...Array(jaunesA).fill({ type: "carton_jaune", equipe: m.equipeAId }),
+      ...Array(rougesA).fill({ type: "carton_rouge", equipe: m.equipeAId }),
+      ...Array(jaunesB).fill({ type: "carton_jaune", equipe: m.equipeBId }),
+      ...Array(rougesB).fill({ type: "carton_rouge", equipe: m.equipeBId }),
+    ];
+    await setMatchResult(m.tournamentId, m.id, { scoreA, scoreB, statutMatch, evenements });
+    document.getElementById("am-result").textContent = "Résultat enregistré ✓";
+    renderMesMatchsArbitre();
+  });
+}
 
 document.getElementById("j-btn-logout").addEventListener("click", () => {
   currentPlayer = null;
