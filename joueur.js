@@ -1,6 +1,6 @@
 import {
   createPlayer, findPlayerByPassword, setPlayerAvailability,
-  findTeamByCode, addTeamMember, getTeamsForPlayer,
+  findEquipeByCode, addEquipeMember, getEquipesForPlayer, getInscriptionsForEquipe,
 } from "./db.js";
 import * as Grid from "./grid.js";
 
@@ -99,7 +99,7 @@ let pendingSondageKeys = new Set();
 async function renderMesEquipes() {
   if (!currentPlayer) return;
   const container = document.getElementById("j-mes-equipes");
-  const equipes = await getTeamsForPlayer(currentPlayer.id);
+  const equipes = await getEquipesForPlayer(currentPlayer.id);
 
   pendingSondageKeys = new Set();
   equipes.forEach((e) => (e.sondagesJoueurs || []).forEach((k) => pendingSondageKeys.add(k)));
@@ -110,8 +110,19 @@ async function renderMesEquipes() {
     container.innerHTML = `<p class="muted">Tu ne fais partie d'aucune équipe pour l'instant.</p>`;
     return;
   }
-  container.innerHTML = equipes
-    .map((e) => `<p><strong>${e.nom}</strong> <span class="muted">— tournoi : ${e.tournamentNom}</span></p>`)
+
+  // Une équipe est désormais globale (pas liée à un seul tournoi) — on
+  // affiche ses inscriptions actuelles (à quel(s) tournoi(s) elle participe).
+  const parEquipe = await Promise.all(
+    equipes.map(async (e) => ({ equipe: e, inscriptions: await getInscriptionsForEquipe(e.id) }))
+  );
+  container.innerHTML = parEquipe
+    .map(({ equipe, inscriptions }) => {
+      const tournois = inscriptions.length
+        ? inscriptions.map((i) => i.tournamentNom).join(", ")
+        : "aucun tournoi pour l'instant";
+      return `<p><strong>${equipe.nom}</strong> <span class="muted">— ${tournois}</span></p>`;
+    })
     .join("");
 }
 
@@ -133,7 +144,7 @@ document.getElementById("j-btn-rejoindre").addEventListener("click", async () =>
   if (!code) return;
   resultEl.textContent = "Recherche de l'équipe...";
   try {
-    const equipe = await findTeamByCode(code);
+    const equipe = await findEquipeByCode(code);
     if (!equipe) {
       resultEl.textContent = "Aucune équipe ne correspond à ce code.";
       return;
@@ -143,7 +154,7 @@ document.getElementById("j-btn-rejoindre").addEventListener("click", async () =>
       resultEl.textContent = `Tu fais déjà partie de l'équipe "${equipe.nom}".`;
       return;
     }
-    await addTeamMember(equipe.tournamentId, equipe.teamId, {
+    await addEquipeMember(equipe.id, {
       type: "compte",
       joueurId: currentPlayer.id,
       nom: currentPlayer.nom,

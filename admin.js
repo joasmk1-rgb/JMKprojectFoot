@@ -1,10 +1,11 @@
 import { ADMIN_PASSPHRASE } from "./config.js";
 import {
   createTournament, watchTournaments, getTournament, updateTournament,
-  createTeam, watchTeams, updateTeam, deleteTeam, addTeamMember, removeTeamMember,
+  createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability,
+  inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
+  createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
   saveMatches, clearMatches, watchMatches, setMatchResult, actMatch, deleteMatch,
   getAdmins, watchAdmins, createAdmin, deleteAdmin,
-  createVenue, watchVenues, deleteVenue, setVenueAvailability,
 } from "./db.js";
 import {
   computeNbGroups, splitIntoGroups, scheduleMatches, computeStandings,
@@ -32,10 +33,8 @@ async function tenterLogin() {
   btnLogin.textContent = "Connexion...";
 
   try {
-    // Un seul aller-retour réseau (avant : findAdminByPassword ET getAdmins
-    // étaient appelés l'un après l'autre, donc 2 lectures Firestore en série
-    // au lieu d'une seule) : on récupère la liste une fois, puis on
-    // 1. cherche un admin existant qui correspond, sinon
+    // Un seul aller-retour réseau : on récupère la liste des admins une
+    // fois, puis on 1. cherche un admin existant qui correspond, sinon
     // 2. accepte la passphrase de démarrage UNIQUEMENT s'il n'existe encore
     // aucun admin (bootstrap) — dès qu'un admin existe, elle est morte.
     const admins = await getAdmins();
@@ -75,15 +74,17 @@ adminPasswordInput.addEventListener("keydown", (e) => {
 // ---------- ETAT ----------
 let currentTournamentId = null;
 let currentTournament = null;
-let teams = [];
+
+let equipesGlobal = []; // TOUTES les équipes du hub (collection globale "equipes")
+let inscriptions = []; // inscriptions du tournoi actuellement affiché (équipe <-> tournoi)
+let teams = []; // vue fusionnée : équipe inscrite à CE tournoi + son inscription (groupe/statut/paiement)
+
+let terrainsGlobal = []; // TOUS les terrains du hub (collection globale "terrains")
+let venues = []; // terrains UTILISÉS par ce tournoi (sous-ensemble de terrainsGlobal), avec .creneaux
+
 let matches = [];
-let venues = [];
 
-// ---- Sondage des équipes façon Doodle (tournoi entier) ----
-let modeSondage = false;
-let sondageSelection = new Set();
-
-// ---- Disponibilités des terrains (grille peinte, comme les équipes) ----
+// ---- Disponibilités des terrains (grille peinte) ----
 let selectedVenueId = null;
 let terrainDispoMode = "available";
 let terrainDispoMarks = {};
@@ -91,6 +92,10 @@ let isPaintingTerrain = false;
 let paintActionTerrain = null;
 const terrainDispoDates = Grid.buildDateList(new Date(), 21);
 const terrainDispoTimes = Grid.buildTimeSlots();
+
+// ---- Sondage des équipes façon Doodle (tournoi entier) ----
+let modeSondage = false;
+let sondageSelection = new Set();
 
 let initDone = false;
 
@@ -103,6 +108,21 @@ function init() {
   initDone = true;
 
   watchAdmins(renderAdmins);
+
+  // Équipes et terrains sont globaux : on les écoute une seule fois, pas
+  // par tournoi.
+  watchEquipes((list) => {
+    equipesGlobal = list;
+    recomputeTeams();
+    renderEquipesDisponibles();
+  });
+
+  watchTerrains((list) => {
+    terrainsGlobal = list;
+    recomputeVenues();
+    renderTerrainsDisponibles();
+    populateTerrainDispoSelect();
+  });
 
   watchTournaments((list) => {
     const select = document.getElementById("select-tournament");
@@ -222,6 +242,7 @@ function init() {
     }
   });
 
+  // ---- Équipes : créer (globale) + inscrire automatiquement à ce tournoi ----
   document.getElementById("btn-add-team").addEventListener("click", async () => {
     const btn = document.getElementById("btn-add-team");
     const nom = document.getElementById("eq-nom").value.trim();
@@ -231,7 +252,8 @@ function init() {
     btn.disabled = true;
     btn.textContent = "Ajout...";
     try {
-      await createTeam(currentTournamentId, { nom, capitainePassword: password });
+      const equipeId = await createEquipe({ nom, capitainePassword: password });
+      await inscrireEquipe(currentTournamentId, equipeId);
       document.getElementById("eq-nom").value = "";
       document.getElementById("eq-password").value = "";
     } catch (e) {
@@ -243,12 +265,12 @@ function init() {
     }
   });
 
+  // ---- Terrains : créer (global) ----
   document.getElementById("btn-add-venue").addEventListener("click", async () => {
     const nom = document.getElementById("ter-nom").value.trim();
     if (!nom) return alert("Nom du terrain obligatoire.");
-    if (!currentTournamentId) return alert("Aucun tournoi sélectionné — choisis ou crée d'abord un tournoi en haut de page.");
     try {
-      await createVenue(currentTournamentId, nom);
+      await createTerrain(nom);
       document.getElementById("ter-nom").value = "";
     } catch (e) {
       console.error(e);
@@ -322,8 +344,8 @@ function init() {
     const heureFin = document.getElementById("ter-mr-heure-fin").value || null;
     const dateDebut = document.getElementById("ter-mr-date-debut").value || null;
     const dateFin = document.getElementById("ter-mr-date-fin").value || null;
-
     const seulementVide = document.getElementById("ter-mr-seulement-vide").checked;
+
     const cibles = [];
     terrainDispoDates.forEach((date) => {
       const dateISO = Grid.toISODate(date);
@@ -365,13 +387,12 @@ function init() {
   let generationEnCours = false;
   document.getElementById("btn-generate-schedule").addEventListener("click", async () => {
     // ⚠️ garde contre les double-clics / clics répétés : sans ça, chaque
-    // clic empilait un nouveau lot de matchs par-dessus l'ancien (d'où le
-    // "même match en boucle" rapporté par Joas) plutôt que de le remplacer.
+    // clic empilait un nouveau lot de matchs par-dessus l'ancien.
     if (generationEnCours) return;
 
-    if (!teams.length) return alert("Ajoute d'abord des équipes.");
+    if (!teams.length) return alert("Inscris d'abord des équipes à ce tournoi.");
     if (!venues.length || venues.every((v) => !v.creneaux?.length)) {
-      return alert("Déclare d'abord au moins un créneau de disponibilité dans l'onglet Terrains.");
+      return alert("Sélectionne d'abord au moins un terrain pour ce tournoi (onglet Terrains) et déclare ses créneaux de disponibilité (onglet Disponibilités → Terrains).");
     }
 
     const btn = document.getElementById("btn-generate-schedule");
@@ -391,7 +412,7 @@ function init() {
 
       for (const g of groupes) {
         for (const eq of g.equipes) {
-          if (eq.groupe !== g.nom) await updateTeam(currentTournamentId, eq.id, { groupe: g.nom });
+          if (eq.groupe !== g.nom) await updateInscription(currentTournamentId, eq.id, { groupe: g.nom });
         }
       }
       const generated = scheduleMatches({
@@ -408,6 +429,9 @@ function init() {
         `${generated.length} matchs générés pour ${teams.length} équipe(s) en ${groupes.length} groupe(s).` +
           (nonPlaces ? `\n⚠️ ${nonPlaces} match(s) n'ont pas pu être placés faute de créneaux disponibles.` : "")
       );
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de la génération du calendrier : " + (e.message || e));
     } finally {
       generationEnCours = false;
       btn.disabled = false;
@@ -446,13 +470,13 @@ function init() {
     alert(`Phase finale générée : ${bracket.length} match(s).`);
   });
 
-  // ---- sélection multiple / suppression en masse (équipes, matchs, admins) ----
+  // ---- sélection multiple / suppression en masse (équipes inscrites, matchs, admins) ----
   setupBulkDelete({
     checkAllId: "check-all-teams",
     checkClass: "check-team",
     btnId: "btn-delete-teams-selection",
-    confirmLabel: "équipe(s)",
-    onDelete: (ids) => Promise.all(ids.map((id) => deleteTeam(currentTournamentId, id))),
+    confirmLabel: "équipe(s) à désinscrire de ce tournoi (l'équipe elle-même n'est pas supprimée)",
+    onDelete: (ids) => Promise.all(ids.map((id) => desinscrireEquipe(currentTournamentId, id))),
   });
 
   setupBulkDelete({
@@ -484,7 +508,7 @@ function setupBulkDelete({ checkAllId, checkClass, btnId, confirmLabel, onDelete
   document.getElementById(btnId).addEventListener("click", async () => {
     const ids = [...document.querySelectorAll(`.${checkClass}:checked`)].map((cb) => cb.value);
     if (!ids.length) return alert("Aucun élément coché.");
-    if (!confirm(`Supprimer ${ids.length} ${confirmLabel} sélectionné(s) ?`)) return;
+    if (!confirm(`Supprimer ${ids.length} ${confirmLabel} ?`)) return;
     await onDelete(ids);
   });
 }
@@ -492,27 +516,27 @@ function setupBulkDelete({ checkAllId, checkClass, btnId, confirmLabel, onDelete
 // Abonnements Firestore actifs pour le tournoi actuellement affiché — on
 // les coupe avant de resouscrire, sinon changer de tournoi (ou rappeler
 // selectTournament) empile les écouteurs et déclenche des rendus en double.
-let unsubTeams = null;
+let unsubInscriptions = null;
 let unsubMatches = null;
-let unsubVenues = null;
 
 function selectTournament(id) {
   currentTournamentId = id;
   document.getElementById("select-tournament").value = id;
   document.getElementById("tabs").hidden = false;
 
-  if (unsubTeams) unsubTeams();
+  if (unsubInscriptions) unsubInscriptions();
   if (unsubMatches) unsubMatches();
-  if (unsubVenues) unsubVenues();
 
   getTournament(id).then((t) => {
     currentTournament = t;
+    recomputeVenues();
     renderTeams();
+    renderTerrainsDisponibles();
   });
 
-  unsubTeams = watchTeams(id, (list) => {
-    teams = list;
-    renderTeams();
+  unsubInscriptions = watchInscriptions(id, (list) => {
+    inscriptions = list;
+    recomputeTeams();
   });
 
   unsubMatches = watchMatches(id, (list) => {
@@ -520,22 +544,47 @@ function selectTournament(id) {
     renderMatches();
     renderFinaleMatches();
   });
+}
 
-  unsubVenues = watchVenues(id, (list) => {
-    venues = list;
-    renderVenues();
-  });
+// Reconstruit la vue fusionnée "teams" (équipe globale + son inscription à
+// CE tournoi) à chaque fois que les équipes globales OU les inscriptions
+// changent — c'est cette vue que consomment le calendrier, le classement,
+// la phase finale, etc., exactement comme avant.
+function recomputeTeams() {
+  teams = inscriptions
+    .map((insc) => {
+      const equipe = equipesGlobal.find((e) => e.id === insc.equipeId);
+      if (!equipe) return null; // équipe supprimée globalement mais inscription orpheline
+      return {
+        ...equipe,
+        id: equipe.id,
+        groupe: insc.groupe,
+        statut: insc.statut,
+        statutPaiement: insc.statutPaiement,
+      };
+    })
+    .filter((t) => t !== null);
+  renderTeams();
+  populateDispoViewSelect();
+  if (!document.getElementById("tab-dispos").hidden && document.getElementById("dispo-scope-select").value === "equipes") {
+    renderAdminDispoGrid();
+  }
+}
+
+// Reconstruit "venues" = terrains globaux utilisés par ce tournoi
+// (tournament.terrainIds), avec leurs créneaux déjà calculés côté terrain.
+function recomputeVenues() {
+  const ids = new Set(currentTournament?.terrainIds || []);
+  venues = terrainsGlobal.filter((t) => ids.has(t.id));
 }
 
 function renderTeams() {
   if (currentTournament) {
     const nbGroupes = computeNbGroups(teams.length, currentTournament.tailleGroupeVisee);
     document.getElementById("groupes-preview").textContent = teams.length
-      ? `Avec ${teams.length} équipe(s) et une taille de groupe visée de ${currentTournament.tailleGroupeVisee}, le calendrier générera ${nbGroupes} groupe(s). Ce nombre se recalcule automatiquement à chaque ajout/retrait d'équipe.`
-      : "Ajoute des équipes pour voir combien de groupes seront générés.";
+      ? `Avec ${teams.length} équipe(s) inscrite(s) et une taille de groupe visée de ${currentTournament.tailleGroupeVisee}, le calendrier générera ${nbGroupes} groupe(s). Ce nombre se recalcule automatiquement à chaque inscription/désinscription d'équipe.`
+      : "Inscris des équipes à ce tournoi pour voir combien de groupes seront générés.";
   }
-
-  populateDispoViewSelect();
 
   const tbody = document.getElementById("teams-table");
   tbody.innerHTML = teams
@@ -559,30 +608,74 @@ function renderTeams() {
         </select>
       </td>
       <td>${(t.membres || []).length} joueur(s)</td>
-      <td><button data-del="${t.id}" class="danger">Supprimer</button></td>
+      <td><button data-desinscrire="${t.id}" class="danger">Désinscrire</button></td>
     </tr>`
     )
-    .join("");
+    .join("") || `<p class="muted">Aucune équipe inscrite à ce tournoi pour l'instant.</p>`;
 
   tbody.querySelectorAll(".statut-select").forEach((sel) =>
     sel.addEventListener("change", (e) =>
-      updateTeam(currentTournamentId, e.target.dataset.team, { statut: e.target.value })
+      updateInscription(currentTournamentId, e.target.dataset.team, { statut: e.target.value })
     )
   );
   tbody.querySelectorAll(".paiement-select").forEach((sel) =>
     sel.addEventListener("change", (e) =>
-      updateTeam(currentTournamentId, e.target.dataset.teamPaiement, { statutPaiement: e.target.value })
+      updateInscription(currentTournamentId, e.target.dataset.teamPaiement, { statutPaiement: e.target.value })
     )
   );
-  tbody.querySelectorAll("[data-del]").forEach((btn) =>
+  tbody.querySelectorAll("[data-desinscrire]").forEach((btn) =>
     btn.addEventListener("click", () => {
-      if (confirm("Supprimer cette équipe ?")) deleteTeam(currentTournamentId, btn.dataset.del);
+      if (confirm("Désinscrire cette équipe de ce tournoi ? (l'équipe elle-même n'est pas supprimée)")) {
+        desinscrireEquipe(currentTournamentId, btn.dataset.desinscrire);
+      }
+    })
+  );
+}
+
+// Liste des équipes globales PAS ENCORE inscrites à ce tournoi, avec un
+// bouton pour les inscrire d'un clic (équipe créée pour un autre tournoi,
+// ou par son capitaine directement).
+function renderEquipesDisponibles() {
+  const container = document.getElementById("equipes-disponibles-list");
+  if (!container) return;
+  const inscritesIds = new Set(inscriptions.map((i) => i.equipeId));
+  const disponibles = equipesGlobal.filter((e) => !inscritesIds.has(e.id));
+
+  container.innerHTML = disponibles.length
+    ? disponibles
+        .map(
+          (e) => `
+    <div class="creneau-row">
+      <span>${e.nom}</span>
+      <button data-inscrire="${e.id}" class="secondaire">+ Inscrire à ce tournoi</button>
+      <button data-supprimer-equipe="${e.id}" class="danger">Supprimer définitivement</button>
+    </div>`
+        )
+        .join("")
+    : `<p class="muted">Toutes les équipes existantes sont déjà inscrites à ce tournoi (ou aucune équipe n'existe encore).</p>`;
+
+  container.querySelectorAll("[data-inscrire]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!currentTournamentId) return alert("Sélectionne d'abord un tournoi.");
+      try {
+        await inscrireEquipe(currentTournamentId, btn.dataset.inscrire);
+      } catch (e) {
+        console.error(e);
+        alert("Erreur lors de l'inscription : " + (e.message || e));
+      }
+    })
+  );
+  container.querySelectorAll("[data-supprimer-equipe]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (confirm("Supprimer définitivement cette équipe (et toutes ses inscriptions) ? Cette action est irréversible.")) {
+        deleteEquipe(btn.dataset.supprimerEquipe);
+      }
     })
   );
 }
 
 function teamName(id) {
-  return teams.find((t) => t.id === id)?.nom || "?";
+  return teams.find((t) => t.id === id)?.nom || equipesGlobal.find((e) => e.id === id)?.nom || "?";
 }
 
 function renderMatches() {
@@ -680,44 +773,66 @@ function renderStandings() {
     .join("");
 }
 
-function renderVenues() {
+// ---- Terrains : liste globale + toggle "utilisé dans ce tournoi" ----
+function renderTerrainsDisponibles() {
   const container = document.getElementById("venues-list");
-  container.innerHTML = venues
-    .map((v) => {
-      const nbCreneaux = (v.creneaux || []).length;
-      const resume = nbCreneaux
-        ? (v.creneaux || [])
-            .map((c) => `${c.date} ${c.heureDebut}-${c.heureFin}`)
-            .join(" · ")
-        : "Aucune disponibilité peinte pour l'instant (utilise la grille ci-dessous).";
-      return `
+  if (!container) return;
+  const idsUtilises = new Set(currentTournament?.terrainIds || []);
+
+  container.innerHTML = terrainsGlobal.length
+    ? terrainsGlobal
+        .map((t) => {
+          const nbCreneaux = (t.creneaux || []).length;
+          const resume = nbCreneaux
+            ? (t.creneaux || []).map((c) => `${c.date} ${c.heureDebut}-${c.heureFin}`).join(" · ")
+            : "Aucune disponibilité peinte pour l'instant (onglet Disponibilités → Terrains).";
+          return `
     <div class="card">
-      <h2>${v.nom} <button data-del-venue="${v.id}" class="danger" style="float:right;">Supprimer le terrain</button></h2>
+      <h2>${t.nom} <button data-del-terrain="${t.id}" class="danger" style="float:right;">Supprimer définitivement</button></h2>
+      <label style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" class="check-terrain-utilise" data-terrain="${t.id}" style="width:auto;" ${idsUtilises.has(t.id) ? "checked" : ""} ${currentTournamentId ? "" : "disabled"} />
+        Utilisé pour ce tournoi
+      </label>
       <p class="muted">${resume}</p>
     </div>`;
-    })
-    .join("") || `<p class="muted">Aucun terrain déclaré pour l'instant.</p>`;
+        })
+        .join("")
+    : `<p class="muted">Aucun terrain créé pour l'instant.</p>`;
 
-  container.querySelectorAll("[data-del-venue]").forEach((btn) =>
+  container.querySelectorAll("[data-del-terrain]").forEach((btn) =>
     btn.addEventListener("click", () => {
-      if (confirm("Supprimer ce terrain et toutes ses dispos ?")) deleteVenue(currentTournamentId, btn.dataset.delVenue);
+      if (confirm("Supprimer définitivement ce terrain (et toutes ses dispos) ? Cette action est irréversible.")) {
+        deleteTerrain(btn.dataset.delTerrain);
+      }
     })
   );
 
-  populateTerrainDispoSelect();
+  container.querySelectorAll(".check-terrain-utilise").forEach((cb) =>
+    cb.addEventListener("change", async (e) => {
+      if (!currentTournamentId || !currentTournament) return;
+      const id = e.target.dataset.terrain;
+      const ids = new Set(currentTournament.terrainIds || []);
+      if (e.target.checked) ids.add(id);
+      else ids.delete(id);
+      await updateTournament(currentTournamentId, { terrainIds: [...ids] });
+      currentTournament = await getTournament(currentTournamentId);
+      recomputeVenues();
+    })
+  );
 }
 
 function populateTerrainDispoSelect() {
   const select = document.getElementById("ter-dispo-select");
+  if (!select) return;
   const valeurActuelle = selectedVenueId;
-  select.innerHTML = venues.length
-    ? venues.map((v) => `<option value="${v.id}">${v.nom}</option>`).join("")
-    : `<option value="">Ajoute d'abord un terrain</option>`;
+  select.innerHTML = terrainsGlobal.length
+    ? terrainsGlobal.map((v) => `<option value="${v.id}">${v.nom}</option>`).join("")
+    : `<option value="">Crée d'abord un terrain</option>`;
 
-  if (venues.some((v) => v.id === valeurActuelle)) {
+  if (terrainsGlobal.some((v) => v.id === valeurActuelle)) {
     select.value = valeurActuelle;
   } else {
-    selectedVenueId = venues.length ? venues[0].id : null;
+    selectedVenueId = terrainsGlobal.length ? terrainsGlobal[0].id : null;
     select.value = selectedVenueId || "";
   }
   loadSelectedVenueMarks();
@@ -725,12 +840,13 @@ function populateTerrainDispoSelect() {
 }
 
 function loadSelectedVenueMarks() {
-  const venue = venues.find((v) => v.id === selectedVenueId);
+  const venue = terrainsGlobal.find((v) => v.id === selectedVenueId);
   if (!isPaintingTerrain) terrainDispoMarks = { ...(venue?.dispos || {}) };
 }
 
 function renderTerrainDispoGrid() {
   const gridEl = document.getElementById("terrain-dispo-grid");
+  if (!gridEl) return;
   gridEl.innerHTML = "";
   gridEl.style.gridTemplateColumns = Grid.gridTemplateColumns(terrainDispoDates.length);
   gridEl.style.gridTemplateRows = Grid.gridTemplateRows(terrainDispoTimes.length);
@@ -772,7 +888,7 @@ async function persistTerrainDispoMarks() {
   statusEl.textContent = "Enregistrement...";
   statusEl.className = "saving";
   try {
-    await setVenueAvailability(currentTournamentId, selectedVenueId, terrainDispoMarks);
+    await setTerrainAvailability(selectedVenueId, terrainDispoMarks);
     statusEl.textContent = "Enregistré ✓";
     statusEl.className = "saved";
   } catch (e) {
@@ -798,9 +914,10 @@ function renderFinaleMatches() {
 
 function populateDispoViewSelect() {
   const select = document.getElementById("dispo-view-select");
+  if (!select) return;
   const valeurActuelle = select.value;
   select.innerHTML =
-    `<option value="combinee">Combinée (toutes les équipes)</option>` +
+    `<option value="combinee">Combinée (toutes les équipes inscrites)</option>` +
     teams.map((t) => `<option value="${t.id}">Équipe : ${t.nom}</option>`).join("");
   if ([...select.options].some((o) => o.value === valeurActuelle)) select.value = valeurActuelle;
 }

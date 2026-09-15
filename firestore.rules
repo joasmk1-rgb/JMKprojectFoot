@@ -2,12 +2,16 @@ rules_version = '2';
 
 // Sécurité minimale pour la beta : lecture ouverte à tous (site public),
 // écriture ouverte aussi pour l'instant (pas de vrai système de comptes
-// côté serveur — l'admin/capitaine sont "protégés" par mot de passe côté
-// interface, pas par les règles Firestore elles-mêmes).
+// côté serveur — l'admin/capitaine/joueur sont "protégés" par mot de passe
+// côté interface, pas par les règles Firestore elles-mêmes).
 //
 // ⚠️ C'est le même niveau de sécurité que agenda-conseil : suffisant pour
-// un usage interne (équipes que tu connais), pas pour un vrai hub public
-// avec des inconnus — à revoir avant d'ouvrir le mode "hub"/matchmaking.
+// un usage interne (équipes/joueurs que tu connais), pas pour un vrai hub
+// public avec des inconnus — à revoir avant d'ouvrir grand le mode hub.
+//
+// ARCHITECTURE v2 : équipes, terrains et joueurs sont des collections
+// globales (top-level), indépendantes des tournois. "inscriptions" est la
+// sous-collection qui relie une équipe à un tournoi précis.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -22,21 +26,26 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    match /equipes/{equipeId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /terrains/{terrainId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
     match /tournaments/{tournamentId} {
       allow read: if true;
       allow write: if true;
 
-      match /teams/{teamId} {
+      match /inscriptions/{equipeId} {
         allow read: if true;
         allow write: if true;
       }
 
       match /matches/{matchId} {
-        allow read: if true;
-        allow write: if true;
-      }
-
-      match /venues/{venueId} {
         allow read: if true;
         allow write: if true;
       }

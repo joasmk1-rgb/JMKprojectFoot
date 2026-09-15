@@ -1,16 +1,44 @@
 import {
-  watchTournaments, getTournament, watchTeams, watchMatches,
-  findTeamByPassword, updateTeam, addTeamMember, removeTeamMember,
-  setTeamAvailability, getPlayersByIds,
+  watchTournaments, getTournament, watchEquipes, watchInscriptions, watchMatches,
+  findEquipeByPassword, updateEquipe, addEquipeMember, removeEquipeMember,
+  setEquipeAvailability, getPlayersByIds, getInscriptionsForEquipe,
 } from "./db.js";
 import { computeStandings } from "./schedule.js";
 import * as Grid from "./grid.js";
 
 let currentTournamentId = null;
 let currentTournament = null;
-let teams = [];
+let equipesGlobal = []; // TOUTES les équipes du hub (globales)
+let inscriptions = []; // inscriptions du tournoi actuellement affiché
+let teams = []; // vue fusionnée équipe+inscription, pour CE tournoi (noms, groupe, standings)
 let matches = [];
-let myTeam = null; // { tournamentId, teamId, ...données équipe } une fois connecté
+let myTeam = null; // équipe globale connectée (capitaine) — indépendante du tournoi affiché
+let unsubInscriptions = null;
+let unsubMatches = null;
+
+// ---------- Équipes globales (une seule fois, indépendant du tournoi affiché) ----------
+watchEquipes((list) => {
+  equipesGlobal = list;
+  recomputeTeams();
+  if (myTeam) {
+    // resynchronise la copie locale de myTeam avec la version fraîche
+    const fraiche = equipesGlobal.find((e) => e.id === myTeam.id);
+    if (fraiche) myTeam = fraiche;
+    renderMyTeam();
+  }
+});
+
+function recomputeTeams() {
+  teams = inscriptions
+    .map((insc) => {
+      const equipe = equipesGlobal.find((e) => e.id === insc.id);
+      if (!equipe) return null;
+      return { ...equipe, id: insc.id, groupe: insc.groupe, statut: insc.statut, statutPaiement: insc.statutPaiement };
+    })
+    .filter(Boolean);
+  renderStandings();
+  renderPublicMatches();
+}
 
 // ---------- Tournoi sélectionné ----------
 watchTournaments((list) => {
@@ -29,17 +57,21 @@ function selectTournament(id) {
   getTournament(id).then((t) => {
     currentTournament = t;
     renderStandings();
+    if (myTeam) renderMyTeam();
   });
-  watchTeams(id, (list) => {
-    teams = list;
-    renderStandings();
-    if (myTeam && myTeam.tournamentId === id) renderMyTeam();
+
+  if (unsubInscriptions) unsubInscriptions();
+  unsubInscriptions = watchInscriptions(id, (list) => {
+    inscriptions = list;
+    recomputeTeams();
   });
-  watchMatches(id, (list) => {
+
+  if (unsubMatches) unsubMatches();
+  unsubMatches = watchMatches(id, (list) => {
     matches = list;
     renderPublicMatches();
     renderStandings();
-    if (myTeam && myTeam.tournamentId === id) renderMyTeam();
+    if (myTeam) renderMyTeam();
   });
 }
 
@@ -55,7 +87,7 @@ document.querySelectorAll("nav.tabs button").forEach((btn) => {
 
 // ---------- Vue publique : calendrier ----------
 function teamName(id) {
-  return teams.find((t) => t.id === id)?.nom || "?";
+  return teams.find((t) => t.id === id)?.nom || equipesGlobal.find((e) => e.id === id)?.nom || "?";
 }
 
 function renderPublicMatches() {
@@ -124,7 +156,7 @@ async function tenterCaptainLogin() {
 
   try {
     const password = captainPasswordInput.value;
-    const found = await findTeamByPassword(password);
+    const found = await findEquipeByPassword(password);
     if (!found) {
       alert("Mot de passe non reconnu.");
       return;
@@ -136,9 +168,17 @@ async function tenterCaptainLogin() {
     document.getElementById("btn-captain-logout").hidden = false;
     document.getElementById("tab-btn-mon-equipe").hidden = false;
     document.getElementById("my-terrain-pref").value = found.preferenceTerrain || "";
-    // bascule sur le tournoi de l'équipe connectée si différent
-    if (found.tournamentId !== currentTournamentId) selectTournament(found.tournamentId);
-    else renderMyTeam();
+
+    // Une équipe peut être inscrite à plusieurs tournois désormais — si elle
+    // n'est pas inscrite au tournoi actuellement affiché mais l'est à un
+    // autre, on bascule automatiquement sur celui-là.
+    const mesInscriptions = await getInscriptionsForEquipe(found.id);
+    const dejaSurBonTournoi = mesInscriptions.some((i) => i.tournamentId === currentTournamentId);
+    if (!dejaSurBonTournoi && mesInscriptions.length) {
+      selectTournament(mesInscriptions[0].tournamentId);
+    } else {
+      renderMyTeam();
+    }
   } finally {
     captainLoginEnCours = false;
     btnCaptainLogin.disabled = false;
@@ -162,7 +202,7 @@ document.getElementById("btn-captain-logout").addEventListener("click", () => {
 
 function renderMyTeam() {
   if (!myTeam) return;
-  const teamFraiche = teams.find((t) => t.id === myTeam.teamId);
+  const teamFraiche = equipesGlobal.find((e) => e.id === myTeam.id);
   if (!teamFraiche) return;
 
   // dispos : on ne resynchronise pas pendant qu'on est en train de peindre
@@ -173,18 +213,18 @@ function renderMyTeam() {
     renderDispoGrid();
   }
 
-  // prochains matchs
+  // prochains matchs (dans le tournoi actuellement affiché)
   const mesMatchs = matches.filter(
-    (m) => m.equipeAId === myTeam.teamId || m.equipeBId === myTeam.teamId
+    (m) => m.equipeAId === myTeam.id || m.equipeBId === myTeam.id
   );
   document.getElementById("my-matches").innerHTML = mesMatchs
     .map((m) => {
-      const adversaireId = m.equipeAId === myTeam.teamId ? m.equipeBId : m.equipeAId;
+      const adversaireId = m.equipeAId === myTeam.id ? m.equipeBId : m.equipeAId;
       return `<tr><td>${teamName(adversaireId)}</td><td>${m.date}</td><td>${m.heure}</td><td>${m.terrain}</td></tr>`;
     })
     .join("");
 
-  // composition
+  // composition (globale à l'équipe, indépendante du tournoi affiché)
   document.getElementById("mon-code-equipe").textContent = teamFraiche.codeEquipe || "-";
   const membres = teamFraiche.membres || [];
   document.getElementById("members-table").innerHTML = membres
@@ -199,7 +239,7 @@ function renderMyTeam() {
 
   document.querySelectorAll("[data-remove-member]").forEach((btn) =>
     btn.addEventListener("click", async () => {
-      await removeTeamMember(myTeam.tournamentId, myTeam.teamId, Number(btn.dataset.removeMember));
+      await removeEquipeMember(myTeam.id, Number(btn.dataset.removeMember));
     })
   );
 
@@ -225,10 +265,10 @@ document.getElementById("btn-toggle-mode-sondage-equipe").addEventListener("clic
 document.getElementById("btn-sonder-equipe-appliquer").addEventListener("click", async () => {
   if (!myTeam) return;
   if (!sondageEquipeSelection.size) return alert("Sélectionne d'abord des créneaux (active le mode sélection).");
-  const teamFraiche = teams.find((t) => t.id === myTeam.teamId);
+  const teamFraiche = equipesGlobal.find((e) => e.id === myTeam.id);
   const existants = new Set(teamFraiche?.sondagesJoueurs || []);
   sondageEquipeSelection.forEach((k) => existants.add(k));
-  await updateTeam(myTeam.tournamentId, myTeam.teamId, { sondagesJoueurs: [...existants] });
+  await updateEquipe(myTeam.id, { sondagesJoueurs: [...existants] });
   sondageEquipeSelection.clear();
   document.getElementById("sondage-equipe-selection-count").textContent = "";
   alert("Coéquipiers sondés — ces créneaux apparaîtront en orange sur leur grille perso jusqu'à leur réponse.");
@@ -237,7 +277,7 @@ document.getElementById("btn-sonder-equipe-appliquer").addEventListener("click",
 document.getElementById("btn-sonder-equipe-vider").addEventListener("click", async () => {
   if (!myTeam) return;
   if (!confirm("Vider le sondage en cours pour cette équipe ?")) return;
-  await updateTeam(myTeam.tournamentId, myTeam.teamId, { sondagesJoueurs: [] });
+  await updateEquipe(myTeam.id, { sondagesJoueurs: [] });
 });
 
 async function renderCoequipiersDispoGrid(team) {
@@ -310,7 +350,7 @@ document.getElementById("btn-add-member").addEventListener("click", async () => 
   if (!myTeam) return;
   const nom = document.getElementById("mb-nom").value.trim();
   if (!nom) return alert("Le nom du joueur est obligatoire.");
-  await addTeamMember(myTeam.tournamentId, myTeam.teamId, {
+  await addEquipeMember(myTeam.id, {
     type: "libre",
     nom,
     poste: document.getElementById("mb-poste").value || null,
@@ -325,7 +365,7 @@ document.getElementById("btn-add-member").addEventListener("click", async () => 
 
 document.getElementById("btn-save-pref").addEventListener("click", async () => {
   if (!myTeam) return;
-  await updateTeam(myTeam.tournamentId, myTeam.teamId, {
+  await updateEquipe(myTeam.id, {
     preferenceTerrain: document.getElementById("my-terrain-pref").value,
   });
   alert("Préférence enregistrée.");
@@ -425,7 +465,7 @@ async function persistDispoMarks() {
   statusEl.textContent = "Enregistrement...";
   statusEl.className = "saving";
   try {
-    await setTeamAvailability(myTeam.tournamentId, myTeam.teamId, dispoMarks);
+    await setEquipeAvailability(myTeam.id, dispoMarks);
     statusEl.textContent = "Enregistré ✓";
     statusEl.className = "saved";
     updateSondageBanner(new Set(currentTournament?.sondages || []));

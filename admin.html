@@ -73,15 +73,20 @@
       <button id="btn-add-team">Ajouter l'équipe</button>
     </div>
     <div class="card">
-      <h2>Équipes inscrites</h2>
+      <h2>Équipes inscrites à ce tournoi</h2>
       <p class="muted" id="groupes-preview"></p>
       <div class="toolbar">
-        <button id="btn-delete-teams-selection" class="danger">Supprimer la sélection</button>
+        <button id="btn-delete-teams-selection" class="danger">Désinscrire la sélection</button>
       </div>
       <table>
         <thead><tr><th><input type="checkbox" id="check-all-teams" /></th><th>Nom</th><th>Groupe (généré au calendrier)</th><th>Statut</th><th>Paiement</th><th>Membres</th><th></th></tr></thead>
         <tbody id="teams-table"></tbody>
       </table>
+    </div>
+    <div class="card">
+      <h2>Autres équipes du hub</h2>
+      <p class="muted">Équipes existantes non encore inscrites à ce tournoi — inscris-les ici, ou crée une nouvelle équipe ci-dessus.</p>
+      <div id="equipes-disponibles-list"></div>
     </div>
   </section>
 

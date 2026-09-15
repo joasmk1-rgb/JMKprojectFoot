@@ -1,6 +1,15 @@
 // ===================== DB.JS =====================
 // Tous les échanges avec Firestore passent par ce fichier.
 // Aucun autre fichier ne doit importer directement le SDK Firebase.
+//
+// ARCHITECTURE (v2) : équipes, terrains et joueurs sont des entités
+// GLOBALES, indépendantes de tout tournoi précis — une équipe existe une
+// fois, gérée par son capitaine, et s'INSCRIT ensuite à un ou plusieurs
+// tournois. Un terrain existe une fois (son calendrier de dispo est réel,
+// pas propre à un tournoi) et un tournoi choisit quels terrains il utilise.
+// Ce qui est propre à UN tournoi (groupe de poule, statut, paiement d'une
+// équipe dans CE tournoi) vit dans une "inscription"
+// (tournaments/{id}/inscriptions/{equipeId}), pas sur l'équipe elle-même.
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
@@ -25,11 +34,19 @@ import { marksToCreneaux } from "./grid.js";
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 
+// Code court (6 caractères) que le capitaine partage à ses joueurs pour
+// qu'ils rejoignent l'équipe depuis leur propre compte joueur (hub).
+function genererCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sans 0/O/1/I pour éviter la confusion
+  let code = "";
+  for (let i = 0; i < 6; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return code;
+}
+
 // ---------- ADMINISTRATEURS ----------
 // Même principe que agenda-conseil : tant qu'aucun admin n'existe, la
 // passphrase de config.js sert de clé de démarrage. Dès qu'un premier
-// admin est créé, elle cesse de fonctionner (voir isAdminBootstrap /
-// findAdminByPassword, utilisés ensemble côté admin.js).
+// admin est créé, elle cesse de fonctionner (voir tenterLogin côté admin.js).
 
 export async function getAdmins() {
   const snap = await getDocs(collection(db, "admins"));
@@ -55,9 +72,164 @@ export async function deleteAdmin(adminId) {
   await deleteDoc(doc(db, "admins", adminId));
 }
 
-export async function findAdminByPassword(password) {
-  const admins = await getAdmins();
-  return admins.find((a) => a.password === password) || null;
+// ---------- JOUEURS (comptes individuels du hub) ----------
+// Compte joueur indépendant de toute équipe ou tournoi, avec son mot de
+// passe personnel et sa propre dispo. Il rejoint une ou plusieurs équipes
+// via leur code (voir plus bas).
+
+export async function createPlayer(nom, password) {
+  const ref = await addDoc(collection(db, "joueurs"), {
+    nom,
+    password,
+    dispos: {}, // { "date|heure": "available"|"unavailable" }
+    blocages: [], // créneaux bloqués récurrents : { jour: 0-6, heureDebut, heureFin, motif }
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function findPlayerByPassword(password) {
+  const snap = await getDocs(collection(db, "joueurs"));
+  const match = snap.docs.find((d) => d.data().password === password);
+  return match ? { id: match.id, ...match.data() } : null;
+}
+
+export async function getPlayer(playerId) {
+  const snap = await getDoc(doc(db, "joueurs", playerId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export async function setPlayerAvailability(playerId, marks) {
+  await updateDoc(doc(db, "joueurs", playerId), { dispos: marks });
+}
+
+export async function getPlayersByIds(ids) {
+  const uniques = [...new Set(ids)];
+  const resultats = await Promise.all(uniques.map((id) => getPlayer(id)));
+  return resultats.filter((p) => p !== null);
+}
+
+// ---------- ÉQUIPES (globales, comme les joueurs) ----------
+// Une équipe se crée une fois : nom, mot de passe capitaine, effectif,
+// dispo, préférence terrain — tout est géré par le capitaine et reste
+// valable pour tous les tournois auxquels elle s'inscrit ensuite.
+
+export async function createEquipe(data) {
+  const ref = await addDoc(collection(db, "equipes"), {
+    nom: data.nom,
+    capitainePassword: data.capitainePassword,
+    codeEquipe: genererCode(),
+    preferenceTerrain: data.preferenceTerrain || null,
+    membres: [], // { type: "libre"|"compte", nom, poste?, numero?, piedFort?, joueurId? }
+    dispos: {}, // { "date|heure": "available"|"unavailable" }
+    sondagesJoueurs: [], // créneaux sondés auprès des coéquipiers
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export function watchEquipes(callback) {
+  return onSnapshot(collection(db, "equipes"), (snap) =>
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+  );
+}
+
+export async function getEquipes() {
+  const snap = await getDocs(collection(db, "equipes"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function getEquipe(equipeId) {
+  const snap = await getDoc(doc(db, "equipes", equipeId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+export async function updateEquipe(equipeId, patch) {
+  await updateDoc(doc(db, "equipes", equipeId), patch);
+}
+
+export async function deleteEquipe(equipeId) {
+  await deleteDoc(doc(db, "equipes", equipeId));
+}
+
+export async function addEquipeMember(equipeId, member) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const membres = snap.data().membres || [];
+  membres.push(member);
+  await updateDoc(ref, { membres });
+}
+
+export async function removeEquipeMember(equipeId, index) {
+  const ref = doc(db, "equipes", equipeId);
+  const snap = await getDoc(ref);
+  const membres = (snap.data().membres || []).filter((_, i) => i !== index);
+  await updateDoc(ref, { membres });
+}
+
+export async function setEquipeAvailability(equipeId, marks) {
+  await updateDoc(doc(db, "equipes", equipeId), { dispos: marks });
+}
+
+// Authentifie un capitaine par le mot de passe de son équipe — une seule
+// lecture (la collection équipes est globale, plus besoin de scanner tous
+// les tournois comme avant).
+export async function findEquipeByPassword(password) {
+  const snap = await getDocs(collection(db, "equipes"));
+  const match = snap.docs.find((d) => d.data().capitainePassword === password);
+  return match ? { id: match.id, ...match.data() } : null;
+}
+
+// Trouve une équipe par son code d'invitation, pour qu'un joueur du hub la
+// rejoigne depuis son propre compte.
+export async function findEquipeByCode(code) {
+  const snap = await getDocs(collection(db, "equipes"));
+  const match = snap.docs.find((d) => d.data().codeEquipe === code);
+  return match ? { id: match.id, ...match.data() } : null;
+}
+
+// Liste toutes les équipes (parmi la collection globale) dont ce joueur
+// fait partie en tant que membre "compte" lié.
+export async function getEquipesForPlayer(joueurId) {
+  const snap = await getDocs(collection(db, "equipes"));
+  return snap.docs
+    .filter((d) => (d.data().membres || []).some((m) => m.type === "compte" && m.joueurId === joueurId))
+    .map((d) => ({ id: d.id, ...d.data() }));
+}
+
+// ---------- TERRAINS (globaux) ----------
+// Un terrain existe une fois, avec sa propre grille de dispo réelle
+// (peinte comme pour les équipes/joueurs) — un tournoi choisit ensuite
+// lesquels il utilise (tournament.terrainIds).
+
+export async function createTerrain(nom) {
+  const ref = await addDoc(collection(db, "terrains"), {
+    nom,
+    dispos: {}, // { "date|heure": "available"|"unavailable" }
+    creneaux: [], // plages continues calculées depuis "dispos", consommées par scheduleMatches
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export function watchTerrains(callback) {
+  return onSnapshot(collection(db, "terrains"), (snap) =>
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+  );
+}
+
+export async function getTerrains() {
+  const snap = await getDocs(collection(db, "terrains"));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function deleteTerrain(terrainId) {
+  await deleteDoc(doc(db, "terrains", terrainId));
+}
+
+export async function setTerrainAvailability(terrainId, marks) {
+  const creneaux = marksToCreneaux(marks);
+  await updateDoc(doc(db, "terrains", terrainId), { dispos: marks, creneaux });
 }
 
 // ---------- TOURNOIS ----------
@@ -67,12 +239,14 @@ export async function createTournament(data) {
     nom: data.nom,
     sport: data.sport || "football",
     statut: "préparation", // préparation | en_cours | terminé
-    tailleGroupeVisee: data.tailleGroupeVisee, // ex: 4 -> le nb de groupes se recalcule tout seul selon le nb réel d'équipes
+    tailleGroupeVisee: data.tailleGroupeVisee, // ex: 4 -> le nb de groupes se recalcule tout seul selon le nb réel d'équipes inscrites
     nbMiTemps: data.nbMiTemps,
     dureeMiTemps: data.dureeMiTemps,
     duréePause: data.duréePause,
     allerRetour: data.allerRetour || false,
     nbQualifiesPhaseFinale: data.nbQualifiesPhaseFinale || null, // null = pas de phase finale prévue
+    terrainIds: [], // terrains (globaux) utilisés par ce tournoi
+    sondages: [], // créneaux sondés auprès des équipes inscrites (façon Doodle)
     regleClassement: data.regleClassement || {
       pointsVictoire: 3,
       pointsNul: 1,
@@ -100,217 +274,53 @@ export async function updateTournament(tournamentId, patch) {
   await updateDoc(doc(db, "tournaments", tournamentId), patch);
 }
 
-// ---------- EQUIPES ----------
+// ---------- INSCRIPTIONS (équipe ↔ tournoi) ----------
+// Ce qui n'a de sens que POUR ce tournoi précis : groupe de poule, statut,
+// paiement. Une équipe peut avoir une inscription différente dans chaque
+// tournoi auquel elle participe.
 
-// Code court (6 caractères) que le capitaine partage à ses joueurs pour
-// qu'ils rejoignent l'équipe depuis leur propre compte joueur (hub).
-function genererCodeEquipe() {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sans 0/O/1/I pour éviter la confusion
-  let code = "";
-  for (let i = 0; i < 6; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
-  return code;
-}
-
-export async function createTeam(tournamentId, data) {
-  const ref = await addDoc(collection(db, "tournaments", tournamentId, "teams"), {
-    nom: data.nom,
-    groupe: data.groupe || null,
+export async function inscrireEquipe(tournamentId, equipeId) {
+  await setDoc(doc(db, "tournaments", tournamentId, "inscriptions", equipeId), {
+    equipeId,
+    groupe: null,
     statut: "en_attente", // en_attente | confirmée | forfait
     statutPaiement: "non_payé", // non_payé | payé
-    capitainePassword: data.capitainePassword,
-    codeEquipe: genererCodeEquipe(), // pour que des joueurs du hub rejoignent l'équipe eux-mêmes
-    preferenceTerrain: data.preferenceTerrain || null,
-    membres: [], // { type: "libre"|"compte", nom, poste?, numero?, piedFort?, joueurId? }
     createdAt: serverTimestamp(),
   });
-  return ref.id;
 }
 
-export function watchTeams(tournamentId, callback) {
-  return onSnapshot(
-    collection(db, "tournaments", tournamentId, "teams"),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-  );
+export async function estInscrite(tournamentId, equipeId) {
+  const snap = await getDoc(doc(db, "tournaments", tournamentId, "inscriptions", equipeId));
+  return snap.exists();
 }
 
-export async function getTeams(tournamentId) {
-  const snap = await getDocs(collection(db, "tournaments", tournamentId, "teams"));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-}
-
-export async function updateTeam(tournamentId, teamId, patch) {
-  await updateDoc(doc(db, "tournaments", tournamentId, "teams", teamId), patch);
-}
-
-export async function deleteTeam(tournamentId, teamId) {
-  await deleteDoc(doc(db, "tournaments", tournamentId, "teams", teamId));
-}
-
-export async function addTeamMember(tournamentId, teamId, member) {
-  const teamRef = doc(db, "tournaments", tournamentId, "teams", teamId);
-  const snap = await getDoc(teamRef);
-  const membres = snap.data().membres || [];
-  membres.push(member);
-  await updateDoc(teamRef, { membres });
-}
-
-export async function removeTeamMember(tournamentId, teamId, index) {
-  const teamRef = doc(db, "tournaments", tournamentId, "teams", teamId);
-  const snap = await getDoc(teamRef);
-  const membres = (snap.data().membres || []).filter((_, i) => i !== index);
-  await updateDoc(teamRef, { membres });
-}
-
-// Remplace entièrement les dispos d'une équipe (objet { "date|heure":
-// "available"|"unavailable" }). Le capitaine (ou l'admin pour son compte)
-// enregistre en une fois après un geste de marquage (clic/glissé ou
-// marquage rapide), pas créneau par créneau.
-export async function setTeamAvailability(tournamentId, teamId, marks) {
-  await updateDoc(doc(db, "tournaments", tournamentId, "teams", teamId), { dispos: marks });
-}
-
-// Authentifie un capitaine par le mot de passe de son équipe (parmi toutes
-// les équipes de tous les tournois, comme les membres d'agenda-conseil).
-export async function findTeamByPassword(password) {
-  const tournaments = await getDocs(collection(db, "tournaments"));
-  // interroge tous les tournois en parallèle plutôt qu'un par un (beaucoup
-  // plus rapide dès qu'il y a plusieurs tournois existants)
-  const resultats = await Promise.all(
-    tournaments.docs.map(async (t) => {
-      const teams = await getDocs(collection(db, "tournaments", t.id, "teams"));
-      const match = teams.docs.find((d) => d.data().capitainePassword === password);
-      return match ? { tournamentId: t.id, teamId: match.id, ...match.data() } : null;
-    })
-  );
-  return resultats.find((r) => r !== null) || null;
-}
-
-// Trouve une équipe par son code d'invitation (parmi tous les tournois),
-// pour qu'un joueur du hub rejoigne l'équipe depuis son propre compte.
-export async function findTeamByCode(code) {
-  const tournaments = await getDocs(collection(db, "tournaments"));
-  const resultats = await Promise.all(
-    tournaments.docs.map(async (t) => {
-      const teams = await getDocs(collection(db, "tournaments", t.id, "teams"));
-      const match = teams.docs.find((d) => d.data().codeEquipe === code);
-      return match ? { tournamentId: t.id, teamId: match.id, ...match.data() } : null;
-    })
-  );
-  return resultats.find((r) => r !== null) || null;
-}
-
-// Récupère plusieurs joueurs d'un coup (par ex. pour agréger la dispo de
-// tous les membres "compte" d'une équipe).
-export async function getPlayersByIds(ids) {
-  const uniques = [...new Set(ids)];
-  const resultats = await Promise.all(uniques.map((id) => getPlayer(id)));
-  return resultats.filter((p) => p !== null);
-}
-
-// Liste toutes les équipes (tous tournois confondus) dont ce joueur fait
-// partie en tant que membre "compte" lié — pas de requête Firestore native
-// possible sur un champ imbriqué dans un tableau, donc on parcourt (comme
-// findTeamByPassword) et on filtre côté client.
-export async function getTeamsForPlayer(joueurId) {
-  const tournaments = await getDocs(collection(db, "tournaments"));
-  const resultatsParTournoi = await Promise.all(
-    tournaments.docs.map(async (t) => {
-      const teams = await getDocs(collection(db, "tournaments", t.id, "teams"));
-      return teams.docs
-        .filter((d) => (d.data().membres || []).some((m) => m.type === "compte" && m.joueurId === joueurId))
-        .map((d) => ({ tournamentId: t.id, teamId: d.id, tournamentNom: t.data().nom, ...d.data() }));
-    })
-  );
-  return resultatsParTournoi.flat();
-}
-
-// ---------- TERRAINS (VENUES) ----------
-// Un terrain a une liste de créneaux de disponibilité réelle
-// { date: "2026-10-01", heureDebut: "09:00", heureFin: "13:00" }.
-// Ça permet un tournoi sur un seul jour ou étalé sur plusieurs, terrain par
-// terrain, sans supposer une seule plage horaire commune à tous.
-
-export async function createVenue(tournamentId, nom) {
-  const ref = await addDoc(collection(db, "tournaments", tournamentId, "venues"), {
-    nom,
-    creneaux: [],
-    createdAt: serverTimestamp(),
-  });
-  return ref.id;
-}
-
-export function watchVenues(tournamentId, callback) {
-  return onSnapshot(collection(db, "tournaments", tournamentId, "venues"), (snap) =>
+export function watchInscriptions(tournamentId, callback) {
+  return onSnapshot(collection(db, "tournaments", tournamentId, "inscriptions"), (snap) =>
     callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
   );
 }
 
-export async function deleteVenue(tournamentId, venueId) {
-  await deleteDoc(doc(db, "tournaments", tournamentId, "venues", venueId));
+export async function updateInscription(tournamentId, equipeId, patch) {
+  await updateDoc(doc(db, "tournaments", tournamentId, "inscriptions", equipeId), patch);
 }
 
-export async function addVenueSlot(tournamentId, venueId, slot) {
-  const ref = doc(db, "tournaments", tournamentId, "venues", venueId);
-  const snap = await getDoc(ref);
-  const creneaux = snap.data().creneaux || [];
-  creneaux.push(slot); // { date, heureDebut, heureFin }
-  await updateDoc(ref, { creneaux });
+export async function desinscrireEquipe(tournamentId, equipeId) {
+  await deleteDoc(doc(db, "tournaments", tournamentId, "inscriptions", equipeId));
 }
 
-export async function removeVenueSlot(tournamentId, venueId, index) {
-  const ref = doc(db, "tournaments", tournamentId, "venues", venueId);
-  const snap = await getDoc(ref);
-  const creneaux = (snap.data().creneaux || []).filter((_, i) => i !== index);
-  await updateDoc(ref, { creneaux });
-}
-
-// Remplace entièrement les dispos peintes d'un terrain (mêmes "marks" que
-// les équipes : { "date|heure": "available"|"unavailable" }) et recalcule
-// automatiquement les "creneaux" (plages continues) utilisés par
-// scheduleMatches, en fusionnant les cases "available" consécutives.
-export async function setVenueAvailability(tournamentId, venueId, marks) {
-  const creneaux = marksToCreneaux(marks);
-  await updateDoc(doc(db, "tournaments", tournamentId, "venues", venueId), {
-    dispos: marks,
-    creneaux,
-  });
-}
-
-export async function getVenues(tournamentId) {
-  const snap = await getDocs(collection(db, "tournaments", tournamentId, "venues"));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-}
-
-// ---------- JOUEURS (comptes individuels du hub) ----------
-// Première brique du "hub" : un compte joueur existe indépendamment de
-// toute équipe ou tournoi, avec son mot de passe personnel et sa propre
-// dispo. Il pourra ensuite rejoindre une ou plusieurs équipes (étape
-// suivante), dans un ou plusieurs tournois/championnats/sessions.
-
-export async function createPlayer(nom, password) {
-  const ref = await addDoc(collection(db, "joueurs"), {
-    nom,
-    password,
-    dispos: {}, // { "date|heure": "available"|"unavailable" }
-    blocages: [], // créneaux bloqués récurrents : { jour: 0-6, heureDebut, heureFin, motif }
-    createdAt: serverTimestamp(),
-  });
-  return ref.id;
-}
-
-export async function findPlayerByPassword(password) {
-  const snap = await getDocs(collection(db, "joueurs"));
-  const match = snap.docs.find((d) => d.data().password === password);
-  return match ? { id: match.id, ...match.data() } : null;
-}
-
-export async function getPlayer(playerId) {
-  const snap = await getDoc(doc(db, "joueurs", playerId));
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
-}
-
-export async function setPlayerAvailability(playerId, marks) {
-  await updateDoc(doc(db, "joueurs", playerId), { dispos: marks });
+// Liste, pour une équipe donnée, toutes ses inscriptions (tous tournois
+// confondus) — pas de requête Firestore native possible sur des
+// sous-collections séparées, donc on parcourt les tournois un par un
+// (en parallèle) comme pour findTeamByPassword historiquement.
+export async function getInscriptionsForEquipe(equipeId) {
+  const tournaments = await getDocs(collection(db, "tournaments"));
+  const resultats = await Promise.all(
+    tournaments.docs.map(async (t) => {
+      const snap = await getDoc(doc(db, "tournaments", t.id, "inscriptions", equipeId));
+      return snap.exists() ? { tournamentId: t.id, tournamentNom: t.data().nom, ...snap.data() } : null;
+    })
+  );
+  return resultats.filter((r) => r !== null);
 }
 
 // ---------- MATCHS ----------
