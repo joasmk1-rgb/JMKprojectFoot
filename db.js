@@ -103,6 +103,20 @@ export async function setPlayerAvailability(playerId, marks) {
   await updateDoc(doc(db, "joueurs", playerId), { dispos: marks });
 }
 
+export function watchPlayers(callback) {
+  return onSnapshot(collection(db, "joueurs"), (snap) =>
+    callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
+  );
+}
+
+export async function updatePlayer(playerId, patch) {
+  await updateDoc(doc(db, "joueurs", playerId), patch);
+}
+
+export async function deletePlayer(playerId) {
+  await deleteDoc(doc(db, "joueurs", playerId));
+}
+
 export async function getPlayersByIds(ids) {
   const uniques = [...new Set(ids)];
   const resultats = await Promise.all(uniques.map((id) => getPlayer(id)));
@@ -317,6 +331,14 @@ export async function getTournament(tournamentId) {
 
 export async function updateTournament(tournamentId, patch) {
   await updateDoc(doc(db, "tournaments", tournamentId), patch);
+}
+
+export async function deleteTournament(tournamentId) {
+  const inscriptionsSnap = await getDocs(collection(db, "tournaments", tournamentId, "inscriptions"));
+  for (const d of inscriptionsSnap.docs) await deleteDoc(d.ref);
+  const matchesSnap = await getDocs(collection(db, "tournaments", tournamentId, "matches"));
+  for (const d of matchesSnap.docs) await deleteDoc(d.ref);
+  await deleteDoc(doc(db, "tournaments", tournamentId));
 }
 
 // ---------- CHAMPIONNATS (regroupement de plusieurs tournois) ----------

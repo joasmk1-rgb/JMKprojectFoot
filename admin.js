@@ -1,7 +1,8 @@
 import { ADMIN_PASSPHRASE } from "./config.js";
 import {
-  createTournament, watchTournaments, getTournament, updateTournament,
+  createTournament, watchTournaments, getTournament, updateTournament, deleteTournament,
   createChampionnat, watchChampionnats, updateChampionnat, deleteChampionnat, getMatches,
+  watchPlayers, updatePlayer, deletePlayer,
   createEquipe, watchEquipes, updateEquipe, deleteEquipe, setEquipeAvailability, addEquipeMember, removeEquipeMember,
   inscrireEquipe, watchInscriptions, updateInscription, desinscrireEquipe,
   createTerrain, watchTerrains, deleteTerrain, setTerrainAvailability,
@@ -87,6 +88,7 @@ let matches = [];
 
 let tournamentsList = []; // TOUS les tournois du hub (pour construire la checklist des championnats)
 let championnatsList = [];
+let joueursGlobal = []; // TOUS les comptes joueurs du hub (collection globale "joueurs")
 
 // ---- Disponibilités des terrains (grille peinte) ----
 let selectedVenueId = null;
@@ -112,6 +114,11 @@ function init() {
   initDone = true;
 
   watchAdmins(renderAdmins);
+
+  watchPlayers((list) => {
+    joueursGlobal = list;
+    renderJoueurs();
+  });
 
   // Équipes et terrains sont globaux : on les écoute une seule fois, pas
   // par tournoi.
@@ -200,6 +207,63 @@ function init() {
       btn.disabled = false;
       btn.textContent = "Créer le tournoi";
     }
+  });
+
+  document.getElementById("btn-save-tournoi").addEventListener("click", async () => {
+    if (!currentTournamentId) return;
+    const statusEl = document.getElementById("tn-save-status");
+    const nbQualifiesRaw = document.getElementById("tn-nbqualifies").value;
+    try {
+      await updateTournament(currentTournamentId, {
+        nom: document.getElementById("tn-nom").value.trim(),
+        dateDebut: document.getElementById("tn-datedebut").value || null,
+        dateFin: document.getElementById("tn-datefin").value || null,
+        tailleGroupeVisee: Number(document.getElementById("tn-taillegroupe").value),
+        nbMiTemps: Number(document.getElementById("tn-nbmitemps").value),
+        dureeMiTemps: Number(document.getElementById("tn-dureemitemps").value),
+        duréePause: Number(document.getElementById("tn-pause").value),
+        allerRetour: document.getElementById("tn-allerretour").checked,
+        nbQualifiesPhaseFinale: nbQualifiesRaw ? Number(nbQualifiesRaw) : null,
+      });
+      currentTournament = await getTournament(currentTournamentId);
+      renderTournoiSettings();
+      // Le sélecteur de tournoi en haut de page et la carte "Tournois" de la
+      // page publique affichent le nom — on les rafraîchit pour rester
+      // cohérent sans attendre le prochain snapshot Firestore.
+      const opt = document.querySelector(`#select-tournament option[value="${currentTournamentId}"]`);
+      if (opt) opt.textContent = currentTournament.nom;
+      statusEl.textContent = "Enregistré ✓";
+      setTimeout(() => (statusEl.textContent = ""), 2500);
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = "Erreur : " + (e.message || e);
+    }
+  });
+
+  document.getElementById("btn-delete-tournoi").addEventListener("click", async () => {
+    if (!currentTournamentId || !currentTournament) return;
+    if (!confirm(`Supprimer définitivement le tournoi "${currentTournament.nom}" ? Ses inscriptions et matchs seront perdus. Les équipes du hub ne sont pas touchées.`)) return;
+    if (!confirm("Vraiment sûr ? Cette action est irréversible.")) return;
+    const idASupprimer = currentTournamentId;
+    await deleteTournament(idASupprimer);
+    currentTournamentId = null;
+    currentTournament = null;
+    document.getElementById("tabs").hidden = true;
+    alert("Tournoi supprimé.");
+  });
+
+  document.getElementById("btn-bulk-statut").addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll(".check-team:checked")].map((cb) => cb.value);
+    if (!ids.length) return alert("Aucune équipe cochée.");
+    const statut = document.getElementById("bulk-statut-select").value;
+    await Promise.all(ids.map((id) => updateInscription(currentTournamentId, id, { statut })));
+  });
+
+  document.getElementById("btn-bulk-paiement").addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll(".check-team:checked")].map((cb) => cb.value);
+    if (!ids.length) return alert("Aucune équipe cochée.");
+    const statutPaiement = document.getElementById("bulk-paiement-select").value;
+    await Promise.all(ids.map((id) => updateInscription(currentTournamentId, id, { statutPaiement })));
   });
 
   document.querySelectorAll("nav.tabs button").forEach((btn) => {
@@ -801,6 +865,16 @@ function init() {
     confirmLabel: "administrateur(s)",
     onDelete: (ids) => Promise.all(ids.map((id) => deleteAdmin(id))),
   });
+
+  setupBulkDelete({
+    checkAllId: "check-all-joueurs",
+    checkClass: "check-joueur",
+    btnId: "btn-delete-joueurs-selection",
+    confirmLabel: "compte(s) joueur (aussi retiré(s) des équipes où ils étaient liés)",
+    onDelete: (ids) => Promise.all(ids.map((id) => supprimerJoueur(id))),
+  });
+
+  document.getElementById("joueurs-recherche").addEventListener("input", () => renderJoueurs());
 }
 
 // Câble une case "tout cocher" + un bouton "Supprimer la sélection" à un
@@ -844,6 +918,7 @@ function selectTournament(id) {
     const lienEl = document.getElementById("lien-public-tournoi");
     lienEl.href = lien;
     lienEl.textContent = lien;
+    renderTournoiSettings();
   });
 
   unsubInscriptions = watchInscriptions(id, (list) => {
@@ -878,6 +953,7 @@ function recomputeTeams() {
     .filter((t) => t !== null);
   renderTeams();
   populateDispoViewSelect();
+  renderTournoiSettings();
   if (!document.getElementById("tab-dispos").hidden && document.getElementById("dispo-scope-select").value === "equipes") {
     renderAdminDispoGrid();
   }
@@ -888,6 +964,30 @@ function recomputeTeams() {
 function recomputeVenues() {
   const ids = new Set(currentTournament?.terrainIds || []);
   venues = terrainsGlobal.filter((t) => ids.has(t.id));
+  renderTournoiSettings();
+}
+
+// ---------- Onglet "Tournoi" : réglages + vue d'ensemble ----------
+function renderTournoiSettings() {
+  if (!currentTournament) return;
+  const t = currentTournament;
+  document.getElementById("tn-nom").value = t.nom || "";
+  document.getElementById("tn-datedebut").value = t.dateDebut || "";
+  document.getElementById("tn-datefin").value = t.dateFin || "";
+  document.getElementById("tn-taillegroupe").value = t.tailleGroupeVisee ?? "";
+  document.getElementById("tn-nbmitemps").value = t.nbMiTemps ?? "";
+  document.getElementById("tn-dureemitemps").value = t.dureeMiTemps ?? "";
+  document.getElementById("tn-pause").value = t.duréePause ?? "";
+  document.getElementById("tn-allerretour").checked = !!t.allerRetour;
+  document.getElementById("tn-nbqualifies").value = t.nbQualifiesPhaseFinale ?? "";
+
+  const nbEquipesConfirmees = teams.filter((e) => e.statut === "confirmée").length;
+  const nbTerrains = venues.length;
+  document.getElementById("tn-resume").innerHTML = `
+    ${teams.length} équipe(s) inscrite(s) (${nbEquipesConfirmees} confirmée(s)) — détail et actions dans l'onglet Équipes.<br/>
+    ${nbTerrains} terrain(s) alloué(s) à ce tournoi — à gérer dans l'onglet Terrains.<br/>
+    Inscriptions publiques : ${t.inscriptionsOuvertes !== false ? "ouvertes" : "fermées"} (case à cocher en haut de page).
+  `;
 }
 
 function renderTeams() {
@@ -1670,6 +1770,66 @@ function renderAdmins(admins) {
       if (confirm("Retirer cet administrateur ?")) deleteAdmin(btn.dataset.delAdmin);
     })
   );
+}
+
+// ---------- Comptes joueurs (globaux, hub entier) ----------
+function equipesLieesAuJoueur(joueurId) {
+  return equipesGlobal.filter((e) => (e.membres || []).some((m) => m.type === "compte" && m.joueurId === joueurId));
+}
+
+function renderJoueurs() {
+  const tbody = document.getElementById("joueurs-table");
+  if (!tbody) return;
+  const recherche = normaliseNom(document.getElementById("joueurs-recherche")?.value || "");
+  const liste = recherche ? joueursGlobal.filter((j) => normaliseNom(j.nom).includes(recherche)) : joueursGlobal;
+
+  tbody.innerHTML =
+    liste
+      .map((j) => {
+        const equipesLiees = equipesLieesAuJoueur(j.id);
+        return `
+    <tr>
+      <td><input type="checkbox" class="check-joueur" value="${j.id}" /></td>
+      <td><input data-renommer-joueur="${j.id}" value="${j.nom}" style="width:100%;" /></td>
+      <td>${equipesLiees.length ? equipesLiees.map((e) => e.nom).join(", ") : `<span class="muted">aucune</span>`}</td>
+      <td>
+        <button data-reset-password-joueur="${j.id}" class="secondaire">Réinitialiser mot de passe</button>
+        <button data-supprimer-joueur="${j.id}" class="danger">Supprimer</button>
+      </td>
+    </tr>`;
+      })
+      .join("") || `<p class="muted">${recherche ? "Aucun joueur ne correspond à cette recherche." : "Aucun compte joueur créé pour l'instant."}</p>`;
+
+  tbody.querySelectorAll("[data-renommer-joueur]").forEach((input) =>
+    input.addEventListener("change", (e) => updatePlayer(e.target.dataset.renommerJoueur, { nom: e.target.value.trim() }))
+  );
+  tbody.querySelectorAll("[data-reset-password-joueur]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      const nouveau = prompt("Nouveau mot de passe pour ce joueur (à lui communiquer toi-même) :");
+      if (nouveau && nouveau.trim()) {
+        await updatePlayer(btn.dataset.resetPasswordJoueur, { password: nouveau.trim() });
+        alert("Mot de passe mis à jour.");
+      }
+    })
+  );
+  tbody.querySelectorAll("[data-supprimer-joueur]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (confirm("Supprimer ce compte joueur ? Il sera aussi retiré des équipes où il était lié (redevient un joueur \"libre\" pour elles, ou disparaît de la liste — l'équipe elle-même n'est pas touchée).")) {
+        supprimerJoueur(btn.dataset.supprimerJoueur);
+      }
+    })
+  );
+}
+
+// Supprime le compte joueur ET nettoie les références qui pointent vers lui
+// dans les équipes (sinon on garde un joueurId fantôme dans membres[]).
+async function supprimerJoueur(joueurId) {
+  const equipesLiees = equipesLieesAuJoueur(joueurId);
+  for (const e of equipesLiees) {
+    const index = (e.membres || []).findIndex((m) => m.type === "compte" && m.joueurId === joueurId);
+    if (index !== -1) await removeEquipeMember(e.id, index);
+  }
+  await deletePlayer(joueurId);
 }
 
 // ===================== IMPORT CSV (tournoi déjà joué) =====================

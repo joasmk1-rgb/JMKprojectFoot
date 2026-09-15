@@ -64,7 +64,8 @@
   </div>
 
   <nav class="tabs" id="tabs" hidden>
-    <button data-tab="equipes" class="active">Équipes</button>
+    <button data-tab="tournoi" class="active">Tournoi</button>
+    <button data-tab="equipes">Équipes</button>
     <button data-tab="terrains">Terrains</button>
     <button data-tab="calendrier">Calendrier</button>
     <button data-tab="resultats">Résultats</button>
@@ -72,10 +73,59 @@
     <button data-tab="championnats">Championnats</button>
     <button data-tab="phase-finale">Phase finale</button>
     <button data-tab="dispos">Disponibilités</button>
+    <button data-tab="joueurs">Joueurs</button>
     <button data-tab="admins">Administrateurs</button>
   </nav>
 
-  <section id="tab-equipes" class="tab-content">
+  <section id="tab-tournoi" class="tab-content">
+    <div class="card">
+      <h2>Réglages de ce tournoi</h2>
+      <p class="muted">Modifie les réglages du tournoi actuellement sélectionné en haut de page. Changer la taille de groupe ou le format de match n'affecte que le PROCHAIN calendrier généré — ça ne retouche pas un calendrier déjà généré.</p>
+
+      <label class="champ-label">Nom du tournoi</label>
+      <input id="tn-nom" style="width:100%;margin-bottom:14px;" />
+
+      <label class="champ-label">Date(s) du tournoi</label>
+      <div class="grille-form">
+        <input id="tn-datedebut" type="date" />
+        <input id="tn-datefin" type="date" />
+      </div>
+
+      <label class="champ-label" style="margin-top:14px;">Taille de groupe visée</label>
+      <input id="tn-taillegroupe" type="number" min="2" style="width:100%;margin-bottom:14px;" />
+
+      <label class="champ-label">Format d'un match</label>
+      <div class="grille-form">
+        <input id="tn-nbmitemps" type="number" min="1" placeholder="Nb de mi-temps" />
+        <input id="tn-dureemitemps" type="number" min="1" placeholder="Durée d'une mi-temps (min)" />
+        <input id="tn-pause" type="number" min="0" placeholder="Pause entre 2 matchs (min)" />
+      </div>
+
+      <label style="display:flex;align-items:center;gap:8px;margin:14px 0;">
+        <input id="tn-allerretour" type="checkbox" style="width:auto;" />
+        Aller-retour (chaque équipe affronte chaque autre équipe du groupe 2 fois)
+      </label>
+
+      <label class="champ-label">Phase finale (optionnel)</label>
+      <input id="tn-nbqualifies" type="number" min="2" placeholder="ex : 4 équipes qualifiées" style="width:100%;margin-bottom:14px;" />
+
+      <button id="btn-save-tournoi">Enregistrer les modifications</button>
+      <p class="muted" id="tn-save-status"></p>
+    </div>
+
+    <div class="card">
+      <h2>Vue d'ensemble</h2>
+      <p id="tn-resume" class="muted"></p>
+    </div>
+
+    <div class="card">
+      <h2>Supprimer ce tournoi</h2>
+      <p class="muted">Supprime définitivement le tournoi, ses inscriptions et ses matchs. Les équipes elles-mêmes (et leurs comptes) ne sont pas touchées, elles restent dans le hub.</p>
+      <button id="btn-delete-tournoi" class="danger">Supprimer ce tournoi</button>
+    </div>
+  </section>
+
+  <section id="tab-equipes" class="tab-content" hidden>
     <div class="card">
       <h2>Vérifier les doublons (noms proches)</h2>
       <p class="aide">Compare tous les noms d'équipes et de joueurs du hub (toutes équipes confondues, pas juste celles inscrites à ce tournoi) pour repérer une même personne/équipe écrite différemment — ex : "Anas", "Anas K", "Anas Kada". Rien n'est fusionné automatiquement, c'est à toi de corriger ensuite (bouton "Retirer" dans la composition d'une équipe).</p>
@@ -95,6 +145,20 @@
       <p class="muted" id="groupes-preview"></p>
       <div class="toolbar">
         <button id="btn-delete-teams-selection" class="danger">Désinscrire la sélection</button>
+      </div>
+      <div class="toolbar">
+        <select id="bulk-statut-select">
+          <option value="en_attente">En attente</option>
+          <option value="confirmée">Confirmée</option>
+          <option value="forfait">Forfait</option>
+          <option value="désistée">Désistée</option>
+        </select>
+        <button id="btn-bulk-statut" class="secondaire">Appliquer ce statut à la sélection</button>
+        <select id="bulk-paiement-select">
+          <option value="non_payé">Non payé</option>
+          <option value="payé">Payé</option>
+        </select>
+        <button id="btn-bulk-paiement" class="secondaire">Appliquer ce paiement à la sélection</button>
       </div>
       <table>
         <thead><tr><th><input type="checkbox" id="check-all-teams" /></th><th>Nom</th><th>Groupe (généré au calendrier)</th><th>Statut</th><th>Paiement</th><th>Membres</th><th></th></tr></thead>
@@ -293,6 +357,21 @@
           <div id="terrain-dispo-grid" class="dispo-grid"></div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="tab-joueurs" class="tab-content" hidden>
+    <div class="card">
+      <h2>Comptes joueurs du hub</h2>
+      <p class="muted">Ce sont les comptes créés par les joueurs eux-mêmes (page "Mon compte joueur" / inscription publique), indépendants des équipes — un compte peut être lié à plusieurs équipes.</p>
+      <input id="joueurs-recherche" placeholder="Rechercher un joueur par nom..." style="width:100%;margin-bottom:10px;" />
+      <div class="toolbar">
+        <button id="btn-delete-joueurs-selection" class="danger">Supprimer la sélection</button>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="check-all-joueurs" /></th><th>Nom</th><th>Équipe(s) liée(s)</th><th></th></tr></thead>
+        <tbody id="joueurs-table"></tbody>
+      </table>
     </div>
   </section>
 
